@@ -1,35 +1,49 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.17;
 
-import "../STO.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "../storage/CappedSTOStorage.sol";
-import "./Cap.sol";
-import "../utils/Escrow.sol";
-import "../utils/Refund.sol";
-import "../utils/Minting.sol";
-import "./PricingLogic.sol";
-import "./FixedPrice.sol";
-import "../utils/Fees.sol";
-import "../utils/Signatures.sol";
-import "../interfaces/IFees.sol";
-import "../interfaces/ISignatures.sol";
-import "../libraries/Events.sol";
-import "../libraries/Errors.sol";
-import "../libraries/Order.sol";
-import "../utils/MathHelpers.sol";
-import "../libraries/Attributes.sol";
 import "@ar-security-token/lib/st-identity-registry/src/interfaces/IAttributeRegistry.sol";
 
+import "./storage/CappedSTOStorage.sol";
+import "./mixins/Cap.sol";
+import "./utils/Escrow.sol";
+import "./utils/Refund.sol";
+import "./utils/Minting.sol";
+import "./mixins/PricingLogic.sol";
+import "./mixins/FixedPrice.sol";
+import "./utils/Fees.sol";
+import "./utils/Signatures.sol";
+import "./interfaces/IFees.sol";
+import "./interfaces/ISignatures.sol";
+import "./libraries/Events.sol";
+import "./libraries/Errors.sol";
+import "./libraries/Order.sol";
+import "./utils/MathHelpers.sol";
+import "./libraries/Attributes.sol";
+import "./interfaces/ISTO.sol";
+import "./utils/InvestmentManager.sol";
+import "./utils/FinalizationManager.sol";
+
 /**
- * @title STO module for standard capped crowdsale using ERC20 token with modular pricing logic
+ * @title Security Token Offering for standard capped crowdsale
+ * @notice Implements a compliant STO with modular investment and finalization logic
  */
-contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
+contract CappedSTO is ISTO, CappedSTOStorage, ReentrancyGuard, Cap, Ownable {
+    // Permission constants
+    bytes32 public constant OPERATOR = keccak256("OPERATOR_ROLE");
+    bytes32 public constant FACTORY = keccak256("FACTORY");
+    
+    // The security token being sold
+    address public securityToken;
+    
+    // Flag to determine if this is a Rule506c compliant offering or simple ERC20 offering
+    bool public isRule506cOffering;
+    
     // Modifier that allows only the factory to call a function
     modifier onlyFactory() {
-        require(hasPermission(msg.sender, "FACTORY"), "Caller is not factory");
+        require(hasPermission(msg.sender, FACTORY), "Caller is not factory");
         _;
     }
     
@@ -71,11 +85,16 @@ contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
     // Mapping to track permissions
     mapping(address => mapping(bytes32 => bool)) private _delegatePermissions;
 
+    // Components for investment and finalization management
+    InvestmentManager public investmentManager;
+    FinalizationManager public finalizationManager;
+
     constructor(address _securityToken, bool _isRule506c) 
-        STO(_securityToken, _isRule506c)
         Ownable(msg.sender)
     {
-        // Constructor initialization
+        require(_securityToken != address(0), "Security token address cannot be zero");
+        securityToken = _securityToken;
+        isRule506cOffering = _isRule506c;
         allowBeneficialInvestments = true; // Default to allowing different beneficiaries
     }
     
@@ -93,14 +112,15 @@ contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
         require(address(securityToken) == address(0), "Already initialized");
         require(_owner != address(0), "Owner cannot be zero address");
         
-        // Initialize the STO contract
-        _initialize(_securityToken, _isRule506c);
+        // Initialize token and compliance type
+        securityToken = _securityToken;
+        isRule506cOffering = _isRule506c;
         
         // Set up initial ownership to specified owner (typically deployer)
         _transferOwnership(_owner);
         
         // Grant FACTORY permission to msg.sender to allow configuration
-        _grantPermission(msg.sender, "FACTORY");
+        _grantPermission(msg.sender, FACTORY);
         
         // Grant OPERATOR permission to the owner
         _grantPermission(_owner, OPERATOR);
@@ -173,6 +193,38 @@ contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
         FundRaiseType[] memory fundRaiseTypes = new FundRaiseType[](1);
         fundRaiseTypes[0] = FundRaiseType.ERC20;
         _setFundRaiseType(fundRaiseTypes);
+        
+        // Initialize the manager components
+        _initializeManagers();
+    }
+    
+    /**
+     * @dev Initialize investment and finalization managers
+     */
+    function _initializeManagers() internal {
+        // Create and initialize investment manager
+        investmentManager = new InvestmentManager(
+            address(this),
+            securityToken,
+            address(investmentToken),
+            address(escrow),
+            address(pricingLogic),
+            isRule506cOffering
+        );
+        
+        // Create and initialize finalization manager
+        finalizationManager = new FinalizationManager(
+            address(this),
+            securityToken,
+            address(escrow),
+            address(minting),
+            address(refund),
+            isRule506cOffering
+        );
+        
+        // Set time parameters in investment manager
+        investmentManager.setTimeParameters(startTime, endTime);
+        investmentManager.setAllowBeneficialInvestments(allowBeneficialInvestments);
     }
 
     /**
@@ -262,6 +314,9 @@ contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
         FundRaiseType[] memory fundRaiseTypes = new FundRaiseType[](1);
         fundRaiseTypes[0] = FundRaiseType.ERC20;
         _setFundRaiseType(fundRaiseTypes);
+        
+        // Initialize the manager components
+        _initializeManagers();
     }
     
     /**
@@ -280,6 +335,11 @@ contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
     function setSignaturesContract(address _signaturesContract) external withPerm(OPERATOR) {
         require(_signaturesContract != address(0), Errors.ZERO_ADDRESS);
         signaturesContract = _signaturesContract;
+        
+        // Update investment manager if exists
+        if (address(investmentManager) != address(0)) {
+            investmentManager.setSignaturesContract(_signaturesContract);
+        }
     }
     
     /**
@@ -307,6 +367,12 @@ contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
     function changeAllowBeneficialInvestments(bool _allowBeneficialInvestments) public withPerm(OPERATOR) {
         require(_allowBeneficialInvestments != allowBeneficialInvestments, "Does not change value");
         allowBeneficialInvestments = _allowBeneficialInvestments;
+        
+        // Update investment manager if exists
+        if (address(investmentManager) != address(0)) {
+            investmentManager.setAllowBeneficialInvestments(_allowBeneficialInvestments);
+        }
+        
         emit Events.SetAllowBeneficialInvestments(allowBeneficialInvestments);
     }
 
@@ -315,7 +381,63 @@ contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
      * @param _beneficiary Address performing the token purchase
      * @param _investedAmount Amount of ERC20 tokens to invest
      */
-    function buyTokens(address _beneficiary, uint256 _investedAmount) public whenNotPaused nonReentrant {
+    function buyTokens(address _beneficiary, uint256 _investedAmount) public override whenNotPaused nonReentrant {
+        if (address(investmentManager) != address(0)) {
+            // Use investment manager for token purchase logic
+            _buyTokensWithManager(_beneficiary, _investedAmount);
+        } else {
+            // Use legacy token purchase logic
+            _buyTokensLegacy(_beneficiary, _investedAmount);
+        }
+    }
+    
+    /**
+     * @notice Process token purchase using investment manager
+     */
+    function _buyTokensWithManager(address _beneficiary, uint256 _investedAmount) internal {
+        if (!allowBeneficialInvestments) {
+            require(_beneficiary == msg.sender, "Beneficiary address does not match msg.sender");
+        }
+        
+        // Transfer tokens from investor to this contract
+        bool success = investmentToken.transferFrom(msg.sender, address(this), _investedAmount);
+        require(success, "Token transfer failed");
+        
+        // Approve escrow to take tokens from this contract
+        success = investmentToken.approve(address(escrow), _investedAmount);
+        require(success, "Approval failed");
+        
+        // Process purchase through investment manager
+        (uint256 tokens, uint256 refund) = investmentManager.buyTokens(
+            msg.sender,
+            _beneficiary,
+            _investedAmount
+        );
+        
+        // If there's a refund, send it back to the investor
+        if (refund > 0) {
+            success = investmentToken.transfer(msg.sender, refund);
+            require(success, "Refund transfer failed");
+        }
+        
+        emit Events.TokenPurchase(msg.sender, _beneficiary, _investedAmount - refund, tokens);
+        
+        // Check if hard cap is reached and mark for finalization
+        if (hardCapReached()) {
+            // Instead of automatically finalizing, just close the STO
+            if (!escrow.isSTOClosed()) {
+                escrow.closeSTO(true, false);
+            }
+            
+            // Emit event to notify that finalization is needed
+            emit Events.FinalizationRequired();
+        }
+    }
+    
+    /**
+     * @notice Legacy token purchase implementation (for backward compatibility)
+     */
+    function _buyTokensLegacy(address _beneficiary, uint256 _investedAmount) internal {
         if (!allowBeneficialInvestments) {
             require(_beneficiary == msg.sender, "Beneficiary address does not match msg.sender");
         }
@@ -370,7 +492,62 @@ contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
     function executeSignedOrder(
         Order.OrderInfo calldata order,
         bytes calldata signature
-    ) external whenNotPaused nonReentrant withPerm(OPERATOR) {
+    ) external override whenNotPaused nonReentrant withPerm(OPERATOR) {
+        if (address(investmentManager) != address(0)) {
+            // Use investment manager for signature order processing
+            _executeSignedOrderWithManager(order, signature);
+        } else {
+            // Use legacy signed order processing
+            _executeSignedOrderLegacy(order, signature);
+        }
+    }
+    
+    /**
+     * @notice Process signed order using investment manager
+     */
+    function _executeSignedOrderWithManager(Order.OrderInfo calldata order, bytes calldata signature) internal {
+        // Transfer tokens from investor to this contract
+        bool success = investmentToken.transferFrom(order.investor, address(this), order.investmentTokenAmount);
+        require(success, "Token transfer failed");
+        
+        // Approve escrow to take tokens from this contract
+        success = investmentToken.approve(address(escrow), order.investmentTokenAmount);
+        require(success, "Approval failed");
+        
+        // Process purchase through investment manager
+        (uint256 tokens, uint256 refund) = investmentManager.executeSignedOrder(
+            msg.sender,
+            order,
+            signature
+        );
+        
+        // If there's a refund, send it back to the investor
+        if (refund > 0) {
+            success = investmentToken.transfer(order.investor, refund);
+            require(success, "Refund transfer failed");
+        }
+        
+        emit Events.TokenPurchase(msg.sender, order.investor, order.investmentTokenAmount - refund, tokens);
+        emit Events.OrderExecuted(order.investor, order.investmentTokenAmount, tokens, order.nonce);
+        
+        // Check if hard cap is reached and mark for finalization
+        if (hardCapReached()) {
+            // Since this is called by an operator, we can safely finalize if hard cap is reached
+            if (!escrow.isSTOClosed()) {
+                escrow.closeSTO(true, false);
+            }
+            
+            // Call finalize directly since we're an operator
+            if (!escrow.isFinalized()) {
+                finalize();
+            }
+        }
+    }
+    
+    /**
+     * @notice Legacy signed order implementation (for backward compatibility)
+     */
+    function _executeSignedOrderLegacy(Order.OrderInfo calldata order, bytes calldata signature) internal {
         // Verify the investor's signature
         require(Signatures(signaturesContract).isValidSignature(order, signature, order.investor), 
             "Invalid investor signature");
@@ -432,8 +609,12 @@ contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
      * @param investor The investor address
      * @return The current nonce
      */
-    function getNonce(address investor) external view returns (uint256) {
-        return nonces[investor];
+    function getNonce(address investor) external view override returns (uint256) {
+        if (address(investmentManager) != address(0)) {
+            return investmentManager.getNonce(investor);
+        } else {
+            return nonces[investor];
+        }
     }
     
     // Mapping of investor to nonce (for replay protection)
@@ -446,7 +627,7 @@ contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
      * @notice Allow investors to withdraw some or all of their investment before offering closes
      * @param _amount Amount to withdraw
      */
-    function withdrawInvestment(uint256 _amount) public nonReentrant {
+    function withdrawInvestment(uint256 _amount) public override nonReentrant {
         require(!escrow.isSTOClosed(), "STO is already closed");
         require(!escrow.isFinalized(), "Escrow is already finalized");
         
@@ -463,11 +644,36 @@ contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
      * @notice Claim refund if soft cap was not reached (manual backup method)
      * @dev This is only needed if the automatic refund process failed
      */
-    function claimRefund() public nonReentrant {
+    function claimRefund() public override nonReentrant {
         require(escrow.isFinalized(), "Escrow not finalized");
         require(!escrow.isSoftCapReached(), "Soft cap was reached, no refunds available");
         
         refund.claimRefund();
+    }
+    
+    /**
+     * @notice Finalize the offering
+     * @dev Can only be called after the offering end time or when hard cap is reached
+     */
+    function finalize() public override {
+        require(block.timestamp > endTime || hardCapReached(), "Offering not yet ended and hard cap not reached");
+        require(msg.sender == address(this) || hasPermission(msg.sender, OPERATOR), "Only operator can finalize");
+        
+        if (address(finalizationManager) != address(0)) {
+            // Use finalization manager for finalization logic
+            bool softCapReached = finalizationManager.finalize(
+                endTime,
+                hardCapReached(),
+                address(investmentManager) != address(0) 
+                    ? investmentManager.getAllInvestors() 
+                    : investors
+            );
+            
+            emit Events.STOFinalized(softCapReached);
+        } else {
+            // Use legacy finalization logic
+            _finalize();
+        }
     }
     
     /**
@@ -496,18 +702,6 @@ contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
         
         emit Events.STOFinalized(isSoftCapReached());
     }
-
-    /**
-     * @notice Finalize the offering
-     * @dev Can only be called after the offering end time or when hard cap is reached
-     */
-    function finalize() public {
-        require(block.timestamp > endTime || hardCapReached(), "Offering not yet ended and hard cap not reached");
-        require(msg.sender == address(this) || hasPermission(msg.sender, OPERATOR), "Only operator can finalize");
-        
-        // Call internal finalization function
-        _finalize();
-    }
     
     /**
      * @notice Process refunds for all investors when soft cap is not reached
@@ -525,54 +719,59 @@ contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
      * @dev For Rule506c tokens, this function can now delegate minting to the contract owner 
      * who is already registered as an agent of the security token.
      */
-    function issueTokens(address _investor, uint256 _amount) external {
+    function issueTokens(address _investor, uint256 _amount) external override {
         require(msg.sender == address(minting), "Only minting contract can call this function");
         
-        // Double check investor meets attribute requirements before minting
-        // This should never fail since _canBuy should have been checked during investment
-        require(_canBuy(_investor), "Investor lacks required attributes for token issuance");
-        
-        if (isRule506cOffering) {
-            // Get the token interface
-            IToken token = IToken(securityToken);
+        if (address(finalizationManager) != address(0)) {
+            // Use finalization manager for token issuance
+            finalizationManager.issueTokens(_investor, _amount);
+        } else {
+            // Double check investor meets attribute requirements before minting
+            // This should never fail since _canBuy should have been checked during investment
+            require(_canBuy(_investor), "Investor lacks required attributes for token issuance");
             
-            // Check if this contract is registered as an agent
-            bool isSTOAgent = false;
-            // IToken interface doesn't have isAgent function, so use a try/catch with a custom call
-            (bool success, bytes memory result) = address(token).call(
-                abi.encodeWithSignature("isAgent(address)", address(this))
-            );
-            if (success && result.length > 0) {
-                // Decode the result if the call was successful
-                (isSTOAgent) = abi.decode(result, (bool));
-            } else {
-                // If the call fails, assume we're not an agent
-                isSTOAgent = false;
-            }
-            
-            if (isSTOAgent) {
-                // If STO is an agent, mint directly with try/catch to handle compliance errors
-                try token.mint(_investor, _amount) {
-                    // Minting successful
-                } catch Error(string memory reason) {
-                    // Handle specific error messages from the token contract
-                    revert(string(abi.encodePacked("Token mint failed: ", reason)));
-                } catch {
-                    // Handle other errors
-                    revert("Token mint failed due to compliance check");
+            if (isRule506cOffering) {
+                // Get the token interface
+                IToken token = IToken(securityToken);
+                
+                // Check if this contract is registered as an agent
+                bool isSTOAgent = false;
+                // IToken interface doesn't have isAgent function, so use a try/catch with a custom call
+                (bool success, bytes memory result) = address(token).call(
+                    abi.encodeWithSignature("isAgent(address)", address(this))
+                );
+                if (success && result.length > 0) {
+                    // Decode the result if the call was successful
+                    (isSTOAgent) = abi.decode(result, (bool));
+                } else {
+                    // If the call fails, assume we're not an agent
+                    isSTOAgent = false;
+                }
+                
+                if (isSTOAgent) {
+                    // If STO is an agent, mint directly with try/catch to handle compliance errors
+                    try token.mint(_investor, _amount) {
+                        // Minting successful
+                    } catch Error(string memory reason) {
+                        // Handle specific error messages from the token contract
+                        revert(string(abi.encodePacked("Token mint failed: ", reason)));
+                    } catch {
+                        // Handle other errors
+                        revert("Token mint failed due to compliance check");
+                    }
+                } else {
+                    // If STO is not an agent, we need to use owner permissions
+                    // We'll use a special event to signal the owner to mint tokens
+                    emit Events.MintingDelegated(owner(), _investor, _amount);
+                    
+                    // This implementation still requires the owner to complete the minting manually
+                    // An alternative would be to implement a mintAsOwner function that the owner must call
                 }
             } else {
-                // If STO is not an agent, we need to use owner permissions
-                // We'll use a special event to signal the owner to mint tokens
-                emit Events.MintingDelegated(owner(), _investor, _amount);
-                
-                // This implementation still requires the owner to complete the minting manually
-                // An alternative would be to implement a mintAsOwner function that the owner must call
+                // For simple ERC20 tokens, transfer from STO contract's balance
+                // This assumes the STO contract has been allocated tokens to distribute
+                IERC20(securityToken).transfer(_investor, _amount);
             }
-        } else {
-            // For simple ERC20 tokens, transfer from STO contract's balance
-            // This assumes the STO contract has been allocated tokens to distribute
-            IERC20(securityToken).transfer(_investor, _amount);
         }
     }
     
@@ -593,28 +792,33 @@ contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
     function ownerMintTokens(address _investor, uint256 _amount) external onlyOwner {
         require(isRule506cOffering, "Only applicable for Rule506c offerings");
         
-        // Verify the investor should receive these tokens
-        require(escrow.getTokenAllocation(_investor) >= _amount, "Allocation mismatch");
-        require(!minting.hasClaimedTokens(_investor), "Tokens already claimed");
-        
-        // Double check investor meets attribute requirements before minting
-        // This should never fail since _canBuy should have been checked during investment
-        require(_canBuy(_investor), "Investor lacks required attributes for token issuance");
-        
-        // Mark tokens as claimed in the minting contract
-        minting.markTokensAsClaimed(_investor);
-        
-        // Owner will mint tokens directly to the investor with try/catch to handle compliance errors
-        IToken token = IToken(securityToken);
-        
-        try token.mint(_investor, _amount) {
-            emit Events.TokensDelivered(_investor, _amount);
-        } catch Error(string memory reason) {
-            // Revert with the specific error from the token contract
-            revert(string(abi.encodePacked("Token mint failed: ", reason)));
-        } catch {
-            // Handle other errors
-            revert("Token mint failed due to compliance check");
+        if (address(finalizationManager) != address(0)) {
+            // Use finalization manager for owner minting
+            finalizationManager.ownerMintTokens(_investor, _amount, msg.sender);
+        } else {
+            // Verify the investor should receive these tokens
+            require(escrow.getTokenAllocation(_investor) >= _amount, "Allocation mismatch");
+            require(!minting.hasClaimedTokens(_investor), "Tokens already claimed");
+            
+            // Double check investor meets attribute requirements before minting
+            // This should never fail since _canBuy should have been checked during investment
+            require(_canBuy(_investor), "Investor lacks required attributes for token issuance");
+            
+            // Mark tokens as claimed in the minting contract
+            minting.markTokensAsClaimed(_investor);
+            
+            // Owner will mint tokens directly to the investor with try/catch to handle compliance errors
+            IToken token = IToken(securityToken);
+            
+            try token.mint(_investor, _amount) {
+                emit Events.TokensDelivered(_investor, _amount);
+            } catch Error(string memory reason) {
+                // Revert with the specific error from the token contract
+                revert(string(abi.encodePacked("Token mint failed: ", reason)));
+            } catch {
+                // Handle other errors
+                revert("Token mint failed due to compliance check");
+            }
         }
     }
 
@@ -635,7 +839,7 @@ contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
     /**
      * @notice Return the total no. of tokens sold
      */
-    function getTokensSold() external view returns (uint256) {
+    function getTokensSold() external view override returns (uint256) {
         return getTotalTokensSold();
     }
 
@@ -652,7 +856,7 @@ contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
      * @notice Set the fund raise types
      * @param _fundRaiseTypes Array of fund raise types
      */
-    function _setFundRaiseType(STOStorage.FundRaiseType[] memory _fundRaiseTypes) internal override {
+    function _setFundRaiseType(STOStorage.FundRaiseType[] memory _fundRaiseTypes) internal {
         for (uint8 i = 0; i < _fundRaiseTypes.length; i++) {
             fundRaiseTypes[uint8(_fundRaiseTypes[i])] = true;
         }
@@ -682,33 +886,45 @@ contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
     /**
      * @notice Get all investors
      */
-    function getAllInvestors() external view returns (address[] memory) {
-        return investors;
+    function getAllInvestors() external view override returns (address[] memory) {
+        if (address(investmentManager) != address(0)) {
+            return investmentManager.getAllInvestors();
+        } else {
+            return investors;
+        }
     }
 
     /**
      * @notice Check if an investor has received their tokens
      * @param _investor Address of the investor
      */
-    function hasReceivedTokens(address _investor) external view returns (bool) {
-        return minting.hasClaimedTokens(_investor);
+    function hasReceivedTokens(address _investor) external view override returns (bool) {
+        if (address(finalizationManager) != address(0)) {
+            return finalizationManager.hasReceivedTokens(_investor);
+        } else {
+            return minting.hasClaimedTokens(_investor);
+        }
     }
     
     /**
      * @notice Check if an investor has claimed their refund
      * @param _investor Address of the investor
      */
-    function hasClaimedRefund(address _investor) external view returns (bool) {
-        return refund.hasClaimedRefund(_investor);
+    function hasClaimedRefund(address _investor) external view override returns (bool) {
+        if (address(finalizationManager) != address(0)) {
+            return finalizationManager.hasClaimedRefund(_investor);
+        } else {
+            return refund.hasClaimedRefund(_investor);
+        }
     }
     
     /**
-     * @notice Implement the hasPermission method from STO
+     * @notice Implement the hasPermission method
      * @param _delegate Address to check
      * @param _permission Permission to check
      * @return Whether the address has the permission
      */
-    function hasPermission(address _delegate, bytes32 _permission) internal view override returns(bool) {
+    function hasPermission(address _delegate, bytes32 _permission) internal view returns(bool) {
         // Check if the delegate has explicit permission
         if (_delegatePermissions[_delegate][_permission]) {
             return true;
@@ -730,7 +946,7 @@ contract CappedSTO is CappedSTOStorage, STO, ReentrancyGuard, Cap, Ownable {
      * @param _delegate Address to grant permission to
      * @param _permission Permission to grant
      */
-    function _grantPermission(address _delegate, bytes32 _permission) internal override {
+    function _grantPermission(address _delegate, bytes32 _permission) internal {
         _delegatePermissions[_delegate][_permission] = true;
     }
     

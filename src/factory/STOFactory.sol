@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.17;
 
-import "../STO.sol";
 import "../proxy/STOProxy.sol";
 import "./STOAuxiliaryFactory.sol";
-import "../mixins/CappedSTO.sol";
+import "../CappedSTO.sol";
+import "../interfaces/ISTO.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 /**

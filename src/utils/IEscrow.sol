@@ -12,4 +12,5 @@ interface IEscrow {
     function isSTOClosed() external view returns (bool);
     function isSoftCapReached() external view returns (bool);
     function processWithdrawal(address _investor, uint256 _amount) external;
+    function getTotalTokensSold() external view returns (uint256);
 }

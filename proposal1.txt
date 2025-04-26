@@ -41,6 +41,22 @@
   - Improved testing boundary
   - Better maintainability
 
+### 4. Add Verification Manager
+- **Action**: Create dedicated verification component in `/utils` directory
+- **Implementation**:
+  - Create `utils/VerificationManager.sol`:
+    - Centralize all attribute verification logic
+    - Handle all interactions with AttributeRegistry
+    - Implement caching for repeat verifications
+    - Support batch verification for multiple addresses
+  - Update `CappedSTO.sol` to use VerificationManager
+  - Add comprehensive verification events
+- **Benefits**:
+  - Consistent compliance checks
+  - Reduced code duplication
+  - Simplified integration with attribute registry
+  - Better testing isolation
+
 ## Storage Improvements
 
 ### 1. Add Storage Safety
@@ -146,30 +162,31 @@
 
 ## High-RoC Additional Improvements
 
-### 1. Event Standardization
-- **Action**: Standardize and enhance events
+### 1. Enhance Error Messages Library
+- **Action**: Expand existing Errors.sol library
 - **Implementation**:
-  - Move common events to a dedicated library
-  - Add indexed parameters for efficient filtering
-  - Ensure consistent naming and parameter ordering
-  - Add events for all significant state changes
+  - Add specific error codes and messages for attribute verification
+  - Create error categories (validation, permission, compliance, etc.)
+  - Use descriptive error messages with context information
+  - Add helper functions for common error patterns
 - **Benefits**:
-  - Better off-chain monitoring
-  - Improved debugging
-  - More consistent event patterns
-  - Enhanced transparency
+  - More actionable error messages
+  - Better debugging experience
+  - Consistent error handling
+  - Improved user feedback
 
-### 2. Input Validation Layer
-- **Action**: Add consistent input validation
+### 2. Improve Events Structure
+- **Action**: Enhance the existing Events.sol library
 - **Implementation**:
-  - Create validation library for common checks
-  - Add pre-condition validation to public methods
-  - Implement descriptive error messages
+  - Add indexed parameters to key events for better filtering
+  - Create hierarchical event categories
+  - Ensure all state changes emit appropriate events
+  - Document event relationships for off-chain monitoring
 - **Benefits**:
-  - Better error reporting
-  - Reduced duplicate validation code
-  - Improved security
-  - Better user experience
+  - Better off-chain integration
+  - More comprehensive state tracking
+  - Improved transparency
+  - Enhanced debugging capabilities
 
 ### 3. Circuit Breaker Pattern
 - **Action**: Implement emergency pause functionality
@@ -182,35 +199,29 @@
   - Better operational risk management
   - Graceful handling of unexpected conditions
 
-### 4. Gas Optimization
-- **Action**: Optimize high-cost operations
-- **Implementation**:
-  - Replace repeated storage reads with memory variables
-  - Optimize loops in `_mintTokensToAllInvestors` and similar methods
-  - Add batch processing for token operations
-- **Benefits**:
-  - Lower transaction costs
-  - Better scalability
-  - Improved user experience
-
 ## Evaluation of Enhanced Approach
 
-1. **Elegance: 80/100** (vs. 55/100 current)
+1. **Elegance: 85/100** (vs. 55/100 current)
    - Cleaner architecture with appropriate abstraction
    - More consistent patterns
    - Better component organization
+   - Clear separation of verification logic
    - Improved code flow
 
-2. **Adherence to Best Practices: 85/100** (vs. 65/100 current)
+2. **Adherence to Best Practices: 90/100** (vs. 65/100 current)
    - Stronger interface utilization
    - Better storage management
    - More consistent event usage
+   - Centralized verification logic
    - Enhanced security patterns
+   - Standardized error handling
 
-3. **Intelligibility: 80/100** (vs. 60/100 current)
+3. **Intelligibility: 85/100** (vs. 60/100 current)
    - Clearer responsibilities
    - More intuitive component interactions
    - Better documentation
+   - Simplified compliance logic
+   - Improved error messaging
    - Simpler mental model of system
 
 ## Implementation Strategy
@@ -220,17 +231,22 @@
    - Enhance interfaces
    - Extract manager components
 
-2. **Phase 2: Storage and Factory Improvements**
+2. **Phase 2: Create Verification Manager**
+   - Implement VerificationManager.sol
+   - Update compliance checking logic
+   - Add verification events
+
+3. **Phase 3: Enhance Supporting Libraries**
+   - Expand Errors.sol
+   - Improve Events.sol structure
+   - Add better error messages
+
+4. **Phase 4: Storage and Factory Improvements**
    - Add storage gaps and documentation
    - Consolidate factory contracts
    - Improve deployment flow
 
-3. **Phase 3: Functional Enhancements**
+5. **Phase 5: Functional Enhancements**
    - Strengthen pricing logic interfaces
    - Standardize permission system
-   - Implement high-RoC improvements
-
-4. **Phase 4: Optimization and Refinement**
-   - Optimize gas usage
-   - Enhance error handling
-   - Improve test coverage for new components
+   - Implement circuit breaker pattern

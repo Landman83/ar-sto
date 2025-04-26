@@ -12,7 +12,8 @@ pragma solidity ^0.8.17;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "../STO.sol";
+import "../interfaces/ISTO.sol";
+import "../storage/STOStorage.sol";
 import "../mixins/Cap.sol";
 import "./Refund.sol";
 import "./Minting.sol";
@@ -363,6 +364,14 @@ contract Escrow is ReentrancyGuard {
      */
     function isSoftCapReached() external view returns (bool) {
         return softCapReached;
+    }
+    
+    /**
+     * @dev Get the total tokens sold
+     * @return The total number of security tokens sold
+     */
+    function getTotalTokensSold() external view returns (uint256) {
+        return totalTokensAllocated;
     }
 }
 
