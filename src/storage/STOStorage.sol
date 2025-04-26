@@ -43,7 +43,7 @@ contract STOStorage {
     /// @dev Acts as a conversion rate from investment token to security token
     uint256 public rate;
     
-    /// @notice Hard cap for backward compatibility
+    /// @notice Hard cap for the offering
     /// @dev Maximum number of tokens that can be sold in this offering
     uint256 public cap;
     

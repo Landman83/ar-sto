@@ -79,9 +79,7 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
     // The fees contract
     IFees public fees;
     
-    // Investor tracking is now delegated to InvestmentManager
-    // These arrays and mappings are kept for backward compatibility
-    // but should not be used directly
+    // Investor tracking handled by InvestmentManager
     
     // Mapping to track permissions
     mapping(address => mapping(bytes32 => bool)) private _delegatePermissions;
@@ -174,7 +172,7 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
         
         startTime = _startTime;
         endTime = _endTime;
-        cap = _hardCap; // Keep for backward compatibility
+        cap = _hardCap;
         rate = _rate;
         wallet = _fundsReceiver;
         investmentToken = IERC20(_investmentToken);
@@ -237,10 +235,6 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
         investmentManager.setAllowBeneficialInvestments(allowBeneficialInvestments);
     }
 
-    /**
-     * @notice Removed legacy configuration method
-     * @dev The legacy `configure` method has been removed. Use `configureWithContracts` instead.
-     */
     
     /**
      * @notice Set a new pricing logic contract
@@ -317,14 +311,6 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
      * @param _investedAmount Amount of ERC20 tokens to invest
      */
     function buyTokens(address _beneficiary, uint256 _investedAmount) public override whenNotPaused nonReentrant {
-        // Always use investment manager for token purchase logic
-        _buyTokensWithManager(_beneficiary, _investedAmount);
-    }
-    
-    /**
-     * @notice Process token purchase using investment manager
-     */
-    function _buyTokensWithManager(address _beneficiary, uint256 _investedAmount) internal {
         if (!allowBeneficialInvestments) {
             require(_beneficiary == msg.sender, "Beneficiary address does not match msg.sender");
         }
@@ -365,53 +351,6 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
     }
     
     /**
-     * @notice Legacy token purchase implementation (for backward compatibility)
-     */
-    function _buyTokensLegacy(address _beneficiary, uint256 _investedAmount) internal {
-        if (!allowBeneficialInvestments) {
-            require(_beneficiary == msg.sender, "Beneficiary address does not match msg.sender");
-        }
-
-        require(_investedAmount > 0, "Investment amount must be greater than 0");
-        require(!escrow.isSTOClosed(), "STO is closed");
-        
-        // Transfer tokens from investor to this contract
-        bool success = investmentToken.transferFrom(msg.sender, address(this), _investedAmount);
-        require(success, "Token transfer failed");
-        
-        // Approve escrow to take tokens from this contract
-        success = investmentToken.approve(address(escrow), _investedAmount);
-        require(success, "Approval failed");
-        
-        // Process the transaction
-        (uint256 tokens, uint256 refund) = _processTx(_beneficiary, _investedAmount);
-        
-        // Track investor through investment manager
-        if (!investmentManager.isInvestor(_beneficiary)) {
-            investmentManager.addInvestor(_beneficiary);
-        }
-        
-        // If there's a refund, send it back to the investor
-        if (refund > 0) {
-            success = investmentToken.transfer(msg.sender, refund);
-            require(success, "Refund transfer failed");
-        }
-        
-        emit Events.TokenPurchase(msg.sender, _beneficiary, _investedAmount - refund, tokens);
-        
-        // Check if hard cap is reached and mark for finalization
-        if (hardCapReached()) {
-            // Instead of automatically finalizing, just close the STO
-            if (!escrow.isSTOClosed()) {
-                escrow.closeSTO(true, false);
-            }
-            
-            // Emit event to notify that finalization is needed
-            emit Events.FinalizationRequired();
-        }
-    }
-    
-    /**
      * @notice Execute a signed order from an investor
      * @dev Only callable by operators
      * @param order The order details signed by the investor
@@ -421,14 +360,6 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
         Order.OrderInfo calldata order,
         bytes calldata signature
     ) external override whenNotPaused nonReentrant withPerm(OPERATOR) {
-        // Always use investment manager for signature order processing
-        _executeSignedOrderWithManager(order, signature);
-    }
-    
-    /**
-     * @notice Process signed order using investment manager
-     */
-    function _executeSignedOrderWithManager(Order.OrderInfo calldata order, bytes calldata signature) internal {
         // Transfer tokens from investor to this contract
         bool success = investmentToken.transferFrom(order.investor, address(this), order.investmentTokenAmount);
         require(success, "Token transfer failed");
@@ -468,64 +399,6 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
     }
     
     /**
-     * @notice Legacy signed order implementation (for backward compatibility)
-     */
-    function _executeSignedOrderLegacy(Order.OrderInfo calldata order, bytes calldata signature) internal {
-        // Verify the investor's signature using the signatures contract from investment manager
-        require(Signatures(investmentManager.signaturesContract()).isValidSignature(order, signature, order.investor), 
-            "Invalid investor signature");
-        
-        // Verify the nonce to prevent replay attacks
-        require(investmentManager.getNonce(order.investor) == order.nonce, "Invalid nonce");
-        
-        // Increment the nonce (through the investment manager)
-        investmentManager.incrementNonce(order.investor);
-        
-        // Process the order
-        require(order.investmentToken == address(investmentToken), "Invalid investment token");
-        require(order.investmentTokenAmount > 0, "Investment amount must be greater than 0");
-        require(!escrow.isSTOClosed(), "STO is closed");
-        
-        // Transfer tokens from investor to this contract
-        bool success = investmentToken.transferFrom(order.investor, address(this), order.investmentTokenAmount);
-        require(success, "Token transfer failed");
-        
-        // Approve escrow to take tokens from this contract
-        success = investmentToken.approve(address(escrow), order.investmentTokenAmount);
-        require(success, "Approval failed");
-        
-        // Process the transaction
-        (uint256 tokens, uint256 refund) = _processTx(order.investor, order.investmentTokenAmount);
-        
-        // Track investor through investment manager
-        if (!investmentManager.isInvestor(order.investor)) {
-            investmentManager.addInvestor(order.investor);
-        }
-        
-        // If there's a refund, send it back to the investor
-        if (refund > 0) {
-            success = investmentToken.transfer(order.investor, refund);
-            require(success, "Refund transfer failed");
-        }
-        
-        emit Events.TokenPurchase(msg.sender, order.investor, order.investmentTokenAmount - refund, tokens);
-        emit Events.OrderExecuted(order.investor, order.investmentTokenAmount, tokens, order.nonce);
-        
-        // Check if hard cap is reached and mark for finalization
-        if (hardCapReached()) {
-            // Since this is called by an operator, we can safely finalize if hard cap is reached
-            if (!escrow.isSTOClosed()) {
-                escrow.closeSTO(true, false);
-            }
-            
-            // Call finalize directly since we're an operator
-            if (!escrow.isFinalized()) {
-                finalize();
-            }
-        }
-    }
-    
-    /**
      * @notice Get the current nonce for an investor
      * @param investor The investor address
      * @return The current nonce
@@ -534,7 +407,6 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
         return investmentManager.getNonce(investor);
     }
     
-    // Nonces and signatures contract are now managed by InvestmentManager
 
     /**
      * @notice Allow investors to withdraw some or all of their investment before offering closes
@@ -853,50 +725,6 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
     // -----------------------------------------
     // Internal interface (extensible)
     // -----------------------------------------
-    /**
-     * Processing the purchase as well as verify the required validations
-     * @param _beneficiary Address performing the token purchase
-     * @param _investedAmount Value in investment tokens involved in the purchase
-     * @return tokens Number of tokens to be purchased
-     * @return refund Amount to be refunded
-     */
-    function _processTx(address _beneficiary, uint256 _investedAmount) internal returns(uint256 tokens, uint256 refund) {
-        _preValidatePurchase(_beneficiary, _investedAmount);
-        
-        // Calculate token amount to be created
-        (tokens, refund) = _getTokenAmount(_investedAmount);
-        
-        // Check if this transaction would exceed the hard cap
-        uint256 currentTokensSold = getTotalTokensSold();
-        uint256 hardCapLimit = getHardCap();
-        
-        // If this transaction would exceed the hard cap, adjust the tokens and refund
-        if (currentTokensSold + tokens > hardCapLimit) {
-            uint256 allowedTokens = hardCapLimit - currentTokensSold;
-            
-            // Calculate adjusted investment and refund amounts
-            uint256 originalRate = tokens * 1e18 / (_investedAmount - refund);
-            uint256 adjustedInvestment = allowedTokens * 1e18 / originalRate;
-            uint256 additionalRefund = (_investedAmount - refund) - adjustedInvestment;
-            
-            // Update tokens and refund values
-            tokens = allowedTokens;
-            refund += additionalRefund;
-        }
-        
-        uint256 netInvestment = _investedAmount - refund;
-
-        // Update state
-        fundsRaised[uint8(FundRaiseType.ERC20)] += netInvestment;
-        
-        // Update tokens sold and check if soft cap is reached
-        _updateTokensSold(tokens);
-        
-        // Deposit funds and token allocation in escrow
-        escrow.deposit(_beneficiary, netInvestment, tokens);
-        
-        return (tokens, refund);
-    }
 
     /**
      * @notice Validation of an incoming purchase.

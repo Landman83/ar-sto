@@ -120,8 +120,7 @@ contract STOFactory is Ownable {
     
     /**
      * @dev Deploy STO with individual parameters (convenience function)
-     * This function exists for backward compatibility with existing scripts
-     * It uses the FixedPrice strategy by default
+     * This function uses the FixedPrice strategy by default
      */
     function deploySTOWithParams(
         address _securityToken,

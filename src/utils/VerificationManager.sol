@@ -5,7 +5,6 @@ import "@ar-security-token/lib/st-identity-registry/src/interfaces/IAttributeReg
 import "@ar-security-token/src/interfaces/IToken.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-// Import from st-identity-registry to avoid duplication
 import "@ar-security-token/lib/st-identity-registry/src/libraries/Attributes.sol";
 
 /**
@@ -252,4 +251,3 @@ contract VerificationManager is ReentrancyGuard {
     }
 }
 
-// Interface ITokenRegistry replaced with IToken imported from ar-security-token

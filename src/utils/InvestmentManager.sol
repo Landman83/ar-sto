@@ -15,7 +15,6 @@ import "./Escrow.sol";
 import "../mixins/PricingLogic.sol";
 import "./STOConfig.sol";
 
-// Interface ITokenRegistry replaced with IToken imported from ar-security-token
 
 /**
  * @title InvestmentManager
