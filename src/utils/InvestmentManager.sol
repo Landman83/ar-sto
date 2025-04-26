@@ -4,14 +4,18 @@ pragma solidity ^0.8.17;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@ar-security-token/lib/st-identity-registry/src/interfaces/IAttributeRegistry.sol";
+import "@ar-security-token/src/interfaces/IToken.sol";
 import "../libraries/Attributes.sol";
 import "../libraries/Events.sol";
 import "../libraries/Errors.sol";
 import "../libraries/Order.sol";
 import "../interfaces/ISignatures.sol";
+import "../interfaces/IVerificationManager.sol";
 import "./Escrow.sol";
 import "../mixins/PricingLogic.sol";
 import "./STOConfig.sol";
+
+// Interface ITokenRegistry replaced with IToken imported from ar-security-token
 
 /**
  * @title InvestmentManager
@@ -35,6 +39,9 @@ contract InvestmentManager is ReentrancyGuard {
     
     // Configuration contract
     STOConfig public stoConfig;
+    
+    // Verification manager for compliance checks
+    IVerificationManager public verificationManager;
     
     // Flag indicating if this is a Rule506c compliant offering
     bool public isRule506cOffering;
@@ -69,6 +76,7 @@ contract InvestmentManager is ReentrancyGuard {
      * @param _escrow Address of the escrow contract
      * @param _pricingLogic Address of the pricing logic contract
      * @param _isRule506c Flag indicating if this is a Rule506c compliant offering
+     * @param _verificationManager Address of the verification manager (can be address(0) if not yet created)
      */
     constructor(
         address _stoContract,
@@ -76,7 +84,8 @@ contract InvestmentManager is ReentrancyGuard {
         address _investmentToken,
         address _escrow,
         address _pricingLogic,
-        bool _isRule506c
+        bool _isRule506c,
+        address _verificationManager
     ) {
         require(_stoContract != address(0), "STO contract cannot be zero");
         require(_securityToken != address(0), "Security token cannot be zero");
@@ -94,6 +103,11 @@ contract InvestmentManager is ReentrancyGuard {
         
         // Create the configuration contract
         stoConfig = new STOConfig(_stoContract, _securityToken, _isRule506c);
+        
+        // Set the verification manager if provided
+        if (_verificationManager != address(0)) {
+            verificationManager = IVerificationManager(_verificationManager);
+        }
     }
     
     /**
@@ -248,6 +262,16 @@ contract InvestmentManager is ReentrancyGuard {
     }
     
     /**
+     * @notice Set the verification manager
+     * @param _verificationManager Address of the new verification manager
+     */
+    function setVerificationManager(address _verificationManager) external {
+        require(msg.sender == stoContract, "Only STO contract can call");
+        require(_verificationManager != address(0), "Verification manager cannot be zero");
+        verificationManager = IVerificationManager(_verificationManager);
+    }
+    
+    /**
      * @notice Get all investors
      * @return Array of investor addresses
      */
@@ -383,9 +407,15 @@ contract InvestmentManager is ReentrancyGuard {
      */
     function _canBuy(address _investor) internal view returns (bool) {
         if (isRule506cOffering) {
-            try IToken(securityToken).attributeRegistry() returns (IAttributeRegistry registry) {
+            // If verification manager is set, use it to check verification status
+            if (address(verificationManager) != address(0)) {
+                return verificationManager.isInvestorVerified(_investor);
+            }
+            
+            // Fallback to direct attribute registry check
+            try IToken(securityToken).attributeRegistry() returns (IAttributeRegistry attributeRegistry) {
                 // Check if investor has the ACCREDITED_INVESTOR attribute
-                try registry.hasAttribute(_investor, Attributes.ACCREDITED_INVESTOR) returns (bool hasAttribute) {
+                try attributeRegistry.hasAttribute(_investor, Attributes.ACCREDITED_INVESTOR) returns (bool hasAttribute) {
                     return hasAttribute;
                 } catch {
                     return false;

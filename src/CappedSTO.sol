@@ -5,6 +5,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@ar-security-token/lib/st-identity-registry/src/interfaces/IAttributeRegistry.sol";
+import "@ar-security-token/src/interfaces/IToken.sol";
 
 import "./storage/CappedSTOStorage.sol";
 import "./mixins/Cap.sol";
@@ -23,8 +24,10 @@ import "./libraries/Order.sol";
 import "./utils/MathHelpers.sol";
 import "./libraries/Attributes.sol";
 import "./interfaces/ISTO.sol";
+import "./interfaces/IVerificationManager.sol";
 import "./utils/InvestmentManager.sol";
 import "./utils/FinalizationManager.sol";
+import {VerificationManager} from "./utils/VerificationManager.sol";
 
 /**
  * @title Security Token Offering for standard capped crowdsale
@@ -88,6 +91,7 @@ contract CappedSTO is ISTO, CappedSTOStorage, ReentrancyGuard, Cap, Ownable {
     // Components for investment and finalization management
     InvestmentManager public investmentManager;
     FinalizationManager public finalizationManager;
+    IVerificationManager public verificationManager;
 
     constructor(address _securityToken, bool _isRule506c) 
         Ownable(msg.sender)
@@ -202,6 +206,14 @@ contract CappedSTO is ISTO, CappedSTOStorage, ReentrancyGuard, Cap, Ownable {
      * @dev Initialize investment and finalization managers
      */
     function _initializeManagers() internal {
+        // Create verification manager first
+        VerificationManager verificationManagerImpl = new VerificationManager(
+            address(this),
+            securityToken,
+            isRule506cOffering
+        );
+        verificationManager = IVerificationManager(address(verificationManagerImpl));
+        
         // Create and initialize investment manager
         investmentManager = new InvestmentManager(
             address(this),
@@ -209,7 +221,8 @@ contract CappedSTO is ISTO, CappedSTOStorage, ReentrancyGuard, Cap, Ownable {
             address(investmentToken),
             address(escrow),
             address(pricingLogic),
-            isRule506cOffering
+            isRule506cOffering,
+            address(verificationManager)
         );
         
         // Create and initialize finalization manager
@@ -892,6 +905,64 @@ contract CappedSTO is ISTO, CappedSTOStorage, ReentrancyGuard, Cap, Ownable {
         } else {
             return investors;
         }
+    }
+    
+    /**
+     * @notice Check if an investor is verified
+     * @param _investor The address of the investor to check
+     * @return Whether the investor is verified
+     */
+    function isInvestorVerified(address _investor) external view returns (bool) {
+        if (address(verificationManager) != address(0)) {
+            return verificationManager.isInvestorVerified(_investor);
+        } else {
+            return _canBuy(_investor);
+        }
+    }
+    
+    /**
+     * @notice Verify an investor
+     * @param _investor The address of the investor to verify
+     */
+    function verifyInvestor(address _investor) external withPerm(OPERATOR) {
+        require(address(verificationManager) != address(0), "Verification manager not initialized");
+        verificationManager.verifyInvestor(_investor);
+    }
+    
+    /**
+     * @notice Batch verify investors
+     * @param _investors Array of investor addresses to verify
+     */
+    function batchVerifyInvestors(address[] calldata _investors) external withPerm(OPERATOR) {
+        require(address(verificationManager) != address(0), "Verification manager not initialized");
+        verificationManager.batchVerifyInvestors(_investors);
+    }
+    
+    /**
+     * @notice Unverify an investor
+     * @param _investor The address of the investor to unverify
+     */
+    function unverifyInvestor(address _investor) external withPerm(OPERATOR) {
+        require(address(verificationManager) != address(0), "Verification manager not initialized");
+        verificationManager.unverifyInvestor(_investor);
+    }
+    
+    /**
+     * @notice Request verification with custom data
+     * @param _data Additional verification data (e.g., document hash)
+     */
+    function requestVerification(bytes32 _data) external {
+        require(address(verificationManager) != address(0), "Verification manager not initialized");
+        verificationManager.requestVerification(msg.sender, _data);
+    }
+    
+    /**
+     * @notice Get all pending verification requests
+     * @return Array of addresses with pending verification
+     */
+    function getPendingVerifications() external view returns (address[] memory) {
+        require(address(verificationManager) != address(0), "Verification manager not initialized");
+        return verificationManager.getPendingVerifications();
     }
 
     /**
