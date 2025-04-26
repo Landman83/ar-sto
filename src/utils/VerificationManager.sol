@@ -5,8 +5,8 @@ import "@ar-security-token/lib/st-identity-registry/src/interfaces/IAttributeReg
 import "@ar-security-token/src/interfaces/IToken.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-// Import local libraries for conflict prevention
-import "../libraries/Attributes.sol";
+// Import from st-identity-registry to avoid duplication
+import "@ar-security-token/lib/st-identity-registry/src/libraries/Attributes.sol";
 
 /**
  * @title VerificationManager

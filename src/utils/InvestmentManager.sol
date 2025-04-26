@@ -5,7 +5,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@ar-security-token/lib/st-identity-registry/src/interfaces/IAttributeRegistry.sol";
 import "@ar-security-token/src/interfaces/IToken.sol";
-import "../libraries/Attributes.sol";
+import "@ar-security-token/lib/st-identity-registry/src/libraries/Attributes.sol";
 import "../libraries/Events.sol";
 import "../libraries/Errors.sol";
 import "../libraries/Order.sol";
@@ -252,6 +252,17 @@ contract InvestmentManager is ReentrancyGuard {
     }
     
     /**
+     * @notice Increment the nonce for an investor
+     * @param investor Address of the investor
+     * @return The new nonce value
+     */
+    function incrementNonce(address investor) external returns (uint256) {
+        require(msg.sender == stoContract, "Only STO contract can call");
+        nonces[investor]++;
+        return nonces[investor];
+    }
+    
+    /**
      * @notice Set the signatures contract
      * @param _signaturesContract Address of the new signatures contract
      */
@@ -277,6 +288,23 @@ contract InvestmentManager is ReentrancyGuard {
      */
     function getAllInvestors() external view returns (address[] memory) {
         return _investors;
+    }
+    
+    /**
+     * @notice Add a new investor to the list
+     * @param investor Address of the investor to add
+     * @return Whether the investor was newly added
+     */
+    function addInvestor(address investor) external returns (bool) {
+        require(msg.sender == stoContract, "Only STO contract can call");
+        
+        if (!isInvestor[investor]) {
+            _investors.push(investor);
+            isInvestor[investor] = true;
+            return true;
+        }
+        
+        return false;
     }
     
     /**

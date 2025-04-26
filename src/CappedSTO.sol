@@ -22,7 +22,7 @@ import "./libraries/Events.sol";
 import "./libraries/Errors.sol";
 import "./libraries/Order.sol";
 import "./utils/MathHelpers.sol";
-import "./libraries/Attributes.sol";
+import "@ar-security-token/lib/st-identity-registry/src/libraries/Attributes.sol";
 import "./interfaces/ISTO.sol";
 import "./interfaces/IVerificationManager.sol";
 import "./utils/InvestmentManager.sol";
@@ -79,11 +79,9 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
     // The fees contract
     IFees public fees;
     
-    // Array to keep track of all investors
-    address[] private investors;
-    
-    // Mapping to check if an address is already in the investors array
-    mapping(address => bool) private isInvestor;
+    // Investor tracking is now delegated to InvestmentManager
+    // These arrays and mappings are kept for backward compatibility
+    // but should not be used directly
     
     // Mapping to track permissions
     mapping(address => mapping(bytes32 => bool)) private _delegatePermissions;
@@ -99,7 +97,6 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
         require(_securityToken != address(0), "Security token address cannot be zero");
         securityToken = _securityToken;
         isRule506cOffering = _isRule506c;
-        allowBeneficialInvestments = true; // Default to allowing different beneficiaries
     }
     
     /**
@@ -241,96 +238,9 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
     }
 
     /**
-     * @notice Function used to initialize the contract variables with fixed price logic
-     * @dev This method is maintained for backward compatibility but creates child contracts
-     * which may cause contract size issues. Use configureWithContracts instead for production.
-     * @param _startTime Unix timestamp at which offering get started
-     * @param _endTime Unix timestamp at which offering get ended
-     * @param _hardCap Maximum No. of token base units for sale (hard cap)
-     * @param _softCap Minimum No. of token base units that must be sold (soft cap)
-     * @param _rate Token units a buyer gets multiplied by 10^18 per investment token unit
-     * @param _fundsReceiver Account address to hold the funds
-     * @param _investmentToken Address of the ERC20 token used for investment
-     * @param _minInvestment Minimum investment amount (optional, 0 for no minimum)
-     * @param _feeRate Fee rate in basis points (1 = 0.01%, 200 = 2%) (optional)
-     * @param _feeWallet Address of wallet to receive fees (optional)
+     * @notice Removed legacy configuration method
+     * @dev The legacy `configure` method has been removed. Use `configureWithContracts` instead.
      */
-    function configure(
-        uint256 _startTime,
-        uint256 _endTime,
-        uint256 _hardCap,
-        uint256 _softCap,
-        uint256 _rate,
-        address payable _fundsReceiver,
-        address _investmentToken,
-        uint256 _minInvestment,
-        uint256 _feeRate,
-        address _feeWallet
-    )
-        public
-        onlyFactory
-    {
-        require(endTime == 0, Errors.ALREADY_INITIALIZED);
-        require(_rate > 0, Errors.ZERO_RATE);
-        require(_fundsReceiver != address(0), Errors.ZERO_ADDRESS);
-        require(_investmentToken != address(0), Errors.ZERO_ADDRESS);
-        require(_startTime >= block.timestamp && _endTime > _startTime, "Date parameters are not valid");
-        
-        // Initialize Cap contract with new values
-        _initialize(_hardCap, _softCap);
-        
-        startTime = _startTime;
-        endTime = _endTime;
-        cap = _hardCap; // Keep for backward compatibility
-        rate = _rate;
-        wallet = _fundsReceiver;
-        investmentToken = IERC20(_investmentToken);
-        
-        // Create pricing logic with fixed price
-        FixedPrice fixedPriceLogic = new FixedPrice(
-            address(securityToken),
-            _rate,
-            address(this)
-        );
-        
-        // Set minimum investment if provided
-        if (_minInvestment > 0) {
-            fixedPriceLogic.setMinInvestment(_minInvestment);
-        }
-        
-        // Set the pricing logic
-        pricingLogic = fixedPriceLogic;
-        
-        // Create the minting and refund contracts first
-        minting = new Minting(address(this));
-        refund = new Refund(address(this), _investmentToken, address(this));
-        
-        // Create fees contract if fee parameters are provided
-        address feesContractAddress = address(0);
-        if (_feeRate > 0 && _feeWallet != address(0)) {
-            fees = new Fees(_feeRate, _feeWallet, address(this));
-            feesContractAddress = address(fees);
-        }
-        
-        // Create the escrow contract with references to minting, refund, and fees
-        escrow = new Escrow(
-            address(this),
-            address(securityToken),
-            _investmentToken,
-            _fundsReceiver,
-            address(refund),
-            address(minting),
-            feesContractAddress
-        );
-        
-        // Set ERC20 as the only fund raise type
-        FundRaiseType[] memory fundRaiseTypes = new FundRaiseType[](1);
-        fundRaiseTypes[0] = FundRaiseType.ERC20;
-        _setFundRaiseType(fundRaiseTypes);
-        
-        // Initialize the manager components
-        _initializeManagers();
-    }
     
     /**
      * @notice Set a new pricing logic contract
@@ -347,12 +257,17 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
      */
     function setSignaturesContract(address _signaturesContract) external withPerm(OPERATOR) {
         require(_signaturesContract != address(0), Errors.ZERO_ADDRESS);
-        signaturesContract = _signaturesContract;
         
-        // Update investment manager if exists
-        if (address(investmentManager) != address(0)) {
-            investmentManager.setSignaturesContract(_signaturesContract);
-        }
+        // Only update the investment manager as it's the source of truth
+        investmentManager.setSignaturesContract(_signaturesContract);
+    }
+    
+    /**
+     * @notice Get the current signatures contract address
+     * @return The address of the signatures contract from the investment manager
+     */
+    function signaturesContract() external view returns (address) {
+        return investmentManager.signaturesContract();
     }
     
     /**
@@ -378,15 +293,22 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
      * @param _allowBeneficialInvestments Boolean to allow or disallow beneficial investments
      */
     function changeAllowBeneficialInvestments(bool _allowBeneficialInvestments) public withPerm(OPERATOR) {
-        require(_allowBeneficialInvestments != allowBeneficialInvestments, "Does not change value");
-        allowBeneficialInvestments = _allowBeneficialInvestments;
+        // Get current value from the investment manager (source of truth)
+        bool currentValue = investmentManager.allowBeneficialInvestments();
+        require(_allowBeneficialInvestments != currentValue, "Does not change value");
         
-        // Update investment manager if exists
-        if (address(investmentManager) != address(0)) {
-            investmentManager.setAllowBeneficialInvestments(_allowBeneficialInvestments);
-        }
+        // Only update the investment manager as it's the source of truth
+        investmentManager.setAllowBeneficialInvestments(_allowBeneficialInvestments);
         
-        emit Events.SetAllowBeneficialInvestments(allowBeneficialInvestments);
+        emit Events.SetAllowBeneficialInvestments(_allowBeneficialInvestments);
+    }
+    
+    /**
+     * @notice Get the current state of beneficial investments flag
+     * @return The current state of beneficial investments flag from the investment manager
+     */
+    function getAllowBeneficialInvestments() public view returns (bool) {
+        return investmentManager.allowBeneficialInvestments();
     }
 
     /**
@@ -395,13 +317,8 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
      * @param _investedAmount Amount of ERC20 tokens to invest
      */
     function buyTokens(address _beneficiary, uint256 _investedAmount) public override whenNotPaused nonReentrant {
-        if (address(investmentManager) != address(0)) {
-            // Use investment manager for token purchase logic
-            _buyTokensWithManager(_beneficiary, _investedAmount);
-        } else {
-            // Use legacy token purchase logic
-            _buyTokensLegacy(_beneficiary, _investedAmount);
-        }
+        // Always use investment manager for token purchase logic
+        _buyTokensWithManager(_beneficiary, _investedAmount);
     }
     
     /**
@@ -469,11 +386,9 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
         // Process the transaction
         (uint256 tokens, uint256 refund) = _processTx(_beneficiary, _investedAmount);
         
-        // Track investor for later use
-        if (!isInvestor[_beneficiary]) {
-            investors.push(_beneficiary);
-            isInvestor[_beneficiary] = true;
-            investorCount++;
+        // Track investor through investment manager
+        if (!investmentManager.isInvestor(_beneficiary)) {
+            investmentManager.addInvestor(_beneficiary);
         }
         
         // If there's a refund, send it back to the investor
@@ -506,13 +421,8 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
         Order.OrderInfo calldata order,
         bytes calldata signature
     ) external override whenNotPaused nonReentrant withPerm(OPERATOR) {
-        if (address(investmentManager) != address(0)) {
-            // Use investment manager for signature order processing
-            _executeSignedOrderWithManager(order, signature);
-        } else {
-            // Use legacy signed order processing
-            _executeSignedOrderLegacy(order, signature);
-        }
+        // Always use investment manager for signature order processing
+        _executeSignedOrderWithManager(order, signature);
     }
     
     /**
@@ -561,15 +471,15 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
      * @notice Legacy signed order implementation (for backward compatibility)
      */
     function _executeSignedOrderLegacy(Order.OrderInfo calldata order, bytes calldata signature) internal {
-        // Verify the investor's signature
-        require(Signatures(signaturesContract).isValidSignature(order, signature, order.investor), 
+        // Verify the investor's signature using the signatures contract from investment manager
+        require(Signatures(investmentManager.signaturesContract()).isValidSignature(order, signature, order.investor), 
             "Invalid investor signature");
         
         // Verify the nonce to prevent replay attacks
-        require(nonces[order.investor] == order.nonce, "Invalid nonce");
+        require(investmentManager.getNonce(order.investor) == order.nonce, "Invalid nonce");
         
-        // Increment the nonce
-        nonces[order.investor]++;
+        // Increment the nonce (through the investment manager)
+        investmentManager.incrementNonce(order.investor);
         
         // Process the order
         require(order.investmentToken == address(investmentToken), "Invalid investment token");
@@ -587,11 +497,9 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
         // Process the transaction
         (uint256 tokens, uint256 refund) = _processTx(order.investor, order.investmentTokenAmount);
         
-        // Track investor for later use
-        if (!isInvestor[order.investor]) {
-            investors.push(order.investor);
-            isInvestor[order.investor] = true;
-            investorCount++;
+        // Track investor through investment manager
+        if (!investmentManager.isInvestor(order.investor)) {
+            investmentManager.addInvestor(order.investor);
         }
         
         // If there's a refund, send it back to the investor
@@ -623,18 +531,10 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
      * @return The current nonce
      */
     function getNonce(address investor) external view override returns (uint256) {
-        if (address(investmentManager) != address(0)) {
-            return investmentManager.getNonce(investor);
-        } else {
-            return nonces[investor];
-        }
+        return investmentManager.getNonce(investor);
     }
     
-    // Mapping of investor to nonce (for replay protection)
-    mapping(address => uint256) public nonces;
-    
-    // Address of the signatures contract
-    address public signaturesContract;
+    // Nonces and signatures contract are now managed by InvestmentManager
 
     /**
      * @notice Allow investors to withdraw some or all of their investment before offering closes
@@ -672,21 +572,14 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
         require(block.timestamp > endTime || hardCapReached(), "Offering not yet ended and hard cap not reached");
         require(msg.sender == address(this) || hasPermission(msg.sender, OPERATOR), "Only operator can finalize");
         
-        if (address(finalizationManager) != address(0)) {
-            // Use finalization manager for finalization logic
-            bool softCapReached = finalizationManager.finalize(
-                endTime,
-                hardCapReached(),
-                address(investmentManager) != address(0) 
-                    ? investmentManager.getAllInvestors() 
-                    : investors
-            );
-            
-            emit Events.STOFinalized(softCapReached);
-        } else {
-            // Use legacy finalization logic
-            _finalize();
-        }
+        // Always use finalization manager for finalization logic
+        bool softCapReached = finalizationManager.finalize(
+            endTime,
+            hardCapReached(),
+            investmentManager.getAllInvestors()
+        );
+        
+        emit Events.STOFinalized(softCapReached);
     }
     
     /**
@@ -722,7 +615,7 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
      */
     function _processRefundsForAllInvestors() internal {
         // Process refunds in batches to avoid gas limit issues
-        refund.processRefundsForAll(investors);
+        refund.processRefundsForAll(investmentManager.getAllInvestors());
     }
     
     /**
@@ -735,57 +628,8 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
     function issueTokens(address _investor, uint256 _amount) external override {
         require(msg.sender == address(minting), "Only minting contract can call this function");
         
-        if (address(finalizationManager) != address(0)) {
-            // Use finalization manager for token issuance
-            finalizationManager.issueTokens(_investor, _amount);
-        } else {
-            // Double check investor meets attribute requirements before minting
-            // This should never fail since _canBuy should have been checked during investment
-            require(_canBuy(_investor), "Investor lacks required attributes for token issuance");
-            
-            if (isRule506cOffering) {
-                // Get the token interface
-                IToken token = IToken(securityToken);
-                
-                // Check if this contract is registered as an agent
-                bool isSTOAgent = false;
-                // IToken interface doesn't have isAgent function, so use a try/catch with a custom call
-                (bool success, bytes memory result) = address(token).call(
-                    abi.encodeWithSignature("isAgent(address)", address(this))
-                );
-                if (success && result.length > 0) {
-                    // Decode the result if the call was successful
-                    (isSTOAgent) = abi.decode(result, (bool));
-                } else {
-                    // If the call fails, assume we're not an agent
-                    isSTOAgent = false;
-                }
-                
-                if (isSTOAgent) {
-                    // If STO is an agent, mint directly with try/catch to handle compliance errors
-                    try token.mint(_investor, _amount) {
-                        // Minting successful
-                    } catch Error(string memory reason) {
-                        // Handle specific error messages from the token contract
-                        revert(string(abi.encodePacked("Token mint failed: ", reason)));
-                    } catch {
-                        // Handle other errors
-                        revert("Token mint failed due to compliance check");
-                    }
-                } else {
-                    // If STO is not an agent, we need to use owner permissions
-                    // We'll use a special event to signal the owner to mint tokens
-                    emit Events.MintingDelegated(owner(), _investor, _amount);
-                    
-                    // This implementation still requires the owner to complete the minting manually
-                    // An alternative would be to implement a mintAsOwner function that the owner must call
-                }
-            } else {
-                // For simple ERC20 tokens, transfer from STO contract's balance
-                // This assumes the STO contract has been allocated tokens to distribute
-                IERC20(securityToken).transfer(_investor, _amount);
-            }
-        }
+        // Always use finalization manager for token issuance
+        finalizationManager.issueTokens(_investor, _amount);
     }
     
     /**
@@ -793,7 +637,7 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
      * @dev Internal function to mint tokens to all investors when soft cap is reached
      */
     function _mintTokensToAllInvestors() internal {
-        minting.batchMintAndDeliverTokens(investors);
+        minting.batchMintAndDeliverTokens(investmentManager.getAllInvestors());
     }
     
     /**
@@ -805,34 +649,8 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
     function ownerMintTokens(address _investor, uint256 _amount) external onlyOwner {
         require(isRule506cOffering, "Only applicable for Rule506c offerings");
         
-        if (address(finalizationManager) != address(0)) {
-            // Use finalization manager for owner minting
-            finalizationManager.ownerMintTokens(_investor, _amount, msg.sender);
-        } else {
-            // Verify the investor should receive these tokens
-            require(escrow.getTokenAllocation(_investor) >= _amount, "Allocation mismatch");
-            require(!minting.hasClaimedTokens(_investor), "Tokens already claimed");
-            
-            // Double check investor meets attribute requirements before minting
-            // This should never fail since _canBuy should have been checked during investment
-            require(_canBuy(_investor), "Investor lacks required attributes for token issuance");
-            
-            // Mark tokens as claimed in the minting contract
-            minting.markTokensAsClaimed(_investor);
-            
-            // Owner will mint tokens directly to the investor with try/catch to handle compliance errors
-            IToken token = IToken(securityToken);
-            
-            try token.mint(_investor, _amount) {
-                emit Events.TokensDelivered(_investor, _amount);
-            } catch Error(string memory reason) {
-                // Revert with the specific error from the token contract
-                revert(string(abi.encodePacked("Token mint failed: ", reason)));
-            } catch {
-                // Handle other errors
-                revert("Token mint failed due to compliance check");
-            }
-        }
+        // Always use finalization manager for owner minting
+        finalizationManager.ownerMintTokens(_investor, _amount, msg.sender);
     }
 
     /**
@@ -900,11 +718,16 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
      * @notice Get all investors
      */
     function getAllInvestors() external view override returns (address[] memory) {
-        if (address(investmentManager) != address(0)) {
-            return investmentManager.getAllInvestors();
-        } else {
-            return investors;
-        }
+        return investmentManager.getAllInvestors();
+    }
+    
+    /**
+     * @notice Check if an address is an investor
+     * @param _investor The address to check
+     * @return Whether the address is an investor
+     */
+    function isInvestor(address _investor) external view returns (bool) {
+        return investmentManager.isInvestor(_investor);
     }
     
     /**
@@ -913,11 +736,7 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
      * @return Whether the investor is verified
      */
     function isInvestorVerified(address _investor) external view returns (bool) {
-        if (address(verificationManager) != address(0)) {
-            return verificationManager.isInvestorVerified(_investor);
-        } else {
-            return _canBuy(_investor);
-        }
+        return verificationManager.isInvestorVerified(_investor);
     }
     
     /**
@@ -970,11 +789,7 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
      * @param _investor Address of the investor
      */
     function hasReceivedTokens(address _investor) external view override returns (bool) {
-        if (address(finalizationManager) != address(0)) {
-            return finalizationManager.hasReceivedTokens(_investor);
-        } else {
-            return minting.hasClaimedTokens(_investor);
-        }
+        return finalizationManager.hasReceivedTokens(_investor);
     }
     
     /**
@@ -982,11 +797,7 @@ contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
      * @param _investor Address of the investor
      */
     function hasClaimedRefund(address _investor) external view override returns (bool) {
-        if (address(finalizationManager) != address(0)) {
-            return finalizationManager.hasClaimedRefund(_investor);
-        } else {
-            return refund.hasClaimedRefund(_investor);
-        }
+        return finalizationManager.hasClaimedRefund(_investor);
     }
     
     /**

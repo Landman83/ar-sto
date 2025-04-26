@@ -3,7 +3,7 @@ pragma solidity ^0.8.17;
 
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "../interfaces/ISTO.sol";
-import "./IEscrow.sol";
+import "../interfaces/IEscrow.sol";
 
 
 /**

@@ -18,6 +18,9 @@ import "../utils/Fees.sol";
  * @dev Factory for deploying complete STO setups including all auxiliary contracts
  * This factory consolidates the functionality of both STOFactory and STOAuxiliaryFactory
  * to simplify the deployment process and reduce the number of contracts.
+ * 
+ * NOTE: This factory only uses the `configureWithContracts` pattern for initializing STOs,
+ * which is the recommended approach for all production deployments.
  */
 contract STOFactory is Ownable {
     // STO implementation contract
@@ -72,6 +75,15 @@ contract STOFactory is Ownable {
         uint256 feeRate;
         address feeWallet;
         address owner;
+        // Additional parameters for pricing strategies
+        PricingStrategy pricingStrategy;
+        uint256 minInvestment;
+        // For tiered pricing:
+        uint256[] tierRates;
+        uint256[] tierAmounts;
+        // For dutch auction:
+        uint256 startPrice;
+        uint256 endPrice;
     }
     
     // Auxiliary deployment parameters
@@ -82,6 +94,13 @@ contract STOFactory is Ownable {
         address payable fundsReceiver;
         uint256 rate;
         address feesAddress;
+    }
+    
+    // Pricing strategy types
+    enum PricingStrategy {
+        FixedPrice,
+        DutchAuction,
+        TieredPricing
     }
     
     // Mapping of deployment ID to deployment info
@@ -102,6 +121,7 @@ contract STOFactory is Ownable {
     /**
      * @dev Deploy STO with individual parameters (convenience function)
      * This function exists for backward compatibility with existing scripts
+     * It uses the FixedPrice strategy by default
      */
     function deploySTOWithParams(
         address _securityToken,
@@ -115,8 +135,11 @@ contract STOFactory is Ownable {
         address _investmentToken,
         uint256 _feeRate,
         address _feeWallet,
-        address _owner
+        address _owner,
+        uint256 _minInvestment
     ) public returns (bytes32 deploymentId, address stoAddress) {
+        uint256[] memory emptyArray = new uint256[](0);
+        
         DeploymentParams memory params = DeploymentParams({
             securityToken: _securityToken,
             isRule506c: _isRule506c,
@@ -129,7 +152,104 @@ contract STOFactory is Ownable {
             investmentToken: _investmentToken,
             feeRate: _feeRate,
             feeWallet: _feeWallet,
-            owner: _owner
+            owner: _owner,
+            pricingStrategy: PricingStrategy.FixedPrice,
+            minInvestment: _minInvestment,
+            tierRates: emptyArray,
+            tierAmounts: emptyArray,
+            startPrice: 0,
+            endPrice: 0
+        });
+        
+        return _deploySTO(params);
+    }
+    
+    /**
+     * @dev Deploy STO with tiered pricing strategy
+     */
+    function deploySTOWithTieredPricing(
+        address _securityToken,
+        bool _isRule506c,
+        uint256 _startTime,
+        uint256 _endTime,
+        uint256 _hardCap,
+        uint256 _softCap,
+        address payable _fundsReceiver,
+        address _investmentToken,
+        uint256 _feeRate,
+        address _feeWallet,
+        address _owner,
+        uint256[] memory _tierRates,
+        uint256[] memory _tierAmounts
+    ) public returns (bytes32 deploymentId, address stoAddress) {
+        require(_tierRates.length > 0, "Tier rates array cannot be empty");
+        require(_tierRates.length == _tierAmounts.length, "Tier arrays must be the same length");
+        
+        DeploymentParams memory params = DeploymentParams({
+            securityToken: _securityToken,
+            isRule506c: _isRule506c,
+            startTime: _startTime,
+            endTime: _endTime,
+            hardCap: _hardCap,
+            softCap: _softCap,
+            rate: _tierRates[0], // Default rate is the first tier rate
+            fundsReceiver: _fundsReceiver,
+            investmentToken: _investmentToken,
+            feeRate: _feeRate,
+            feeWallet: _feeWallet,
+            owner: _owner,
+            pricingStrategy: PricingStrategy.TieredPricing,
+            minInvestment: 0,
+            tierRates: _tierRates,
+            tierAmounts: _tierAmounts,
+            startPrice: 0,
+            endPrice: 0
+        });
+        
+        return _deploySTO(params);
+    }
+    
+    /**
+     * @dev Deploy STO with Dutch auction pricing strategy
+     */
+    function deploySTOWithDutchAuction(
+        address _securityToken,
+        bool _isRule506c,
+        uint256 _startTime,
+        uint256 _endTime,
+        uint256 _hardCap,
+        uint256 _softCap,
+        address payable _fundsReceiver,
+        address _investmentToken,
+        uint256 _feeRate,
+        address _feeWallet,
+        address _owner,
+        uint256 _startPrice,
+        uint256 _endPrice
+    ) public returns (bytes32 deploymentId, address stoAddress) {
+        require(_startPrice > _endPrice, "Start price must be greater than end price");
+        
+        uint256[] memory emptyArray = new uint256[](0);
+        
+        DeploymentParams memory params = DeploymentParams({
+            securityToken: _securityToken,
+            isRule506c: _isRule506c,
+            startTime: _startTime,
+            endTime: _endTime,
+            hardCap: _hardCap,
+            softCap: _softCap,
+            rate: _endPrice, // Default rate is the end price
+            fundsReceiver: _fundsReceiver,
+            investmentToken: _investmentToken,
+            feeRate: _feeRate,
+            feeWallet: _feeWallet,
+            owner: _owner,
+            pricingStrategy: PricingStrategy.DutchAuction,
+            minInvestment: 0,
+            tierRates: emptyArray,
+            tierAmounts: emptyArray,
+            startPrice: _startPrice,
+            endPrice: _endPrice
         });
         
         return _deploySTO(params);
@@ -160,7 +280,7 @@ contract STOFactory is Ownable {
         
         // 2. Deploy all auxiliary contracts and initialize STO
         (
-            address fixedPrice,
+            address pricingLogic,
             address minting,
             address refund,
             address fees,
@@ -168,11 +288,7 @@ contract STOFactory is Ownable {
         ) = deployAuxiliaryContracts(
             stoAddress,
             _params.securityToken,
-            _params.investmentToken,
-            _params.rate,
-            _params.fundsReceiver,
-            _params.feeRate,
-            _params.feeWallet
+            _params
         );
         
         // 3. Initialize the STO with the auxiliary contracts
@@ -185,7 +301,7 @@ contract STOFactory is Ownable {
             _params.rate,
             _params.fundsReceiver,
             _params.investmentToken,
-            fixedPrice,
+            pricingLogic,
             minting,
             refund,
             escrow,
@@ -204,7 +320,7 @@ contract STOFactory is Ownable {
             deploymentId, 
             stoAddress, 
             _params.securityToken, 
-            fixedPrice, 
+            pricingLogic, 
             minting, 
             refund, 
             fees, 
@@ -217,7 +333,7 @@ contract STOFactory is Ownable {
             _params.securityToken,
             _params.owner,
             _params.isRule506c,
-            fixedPrice,
+            pricingLogic,
             minting,
             refund,
             fees,
@@ -283,12 +399,8 @@ contract STOFactory is Ownable {
      * @notice Deploy auxiliary contracts for an STO
      * @param _sto Address of the STO contract
      * @param _securityToken Address of the security token
-     * @param _investmentToken Address of the investment token
-     * @param _rate Token conversion rate
-     * @param _fundsReceiver Address to receive funds
-     * @param _feeRate Fee rate in basis points (optional)
-     * @param _feeWallet Fee wallet address (optional)
-     * @return fixedPrice Address of the fixed price contract
+     * @param _params All deployment parameters for auxiliary contracts
+     * @return pricingLogic Address of the pricing logic contract
      * @return minting Address of the minting contract
      * @return refund Address of the refund contract
      * @return fees Address of the fees contract (address(0) if not created)
@@ -297,13 +409,9 @@ contract STOFactory is Ownable {
     function deployAuxiliaryContracts(
         address _sto,
         address _securityToken,
-        address _investmentToken,
-        uint256 _rate,
-        address payable _fundsReceiver,
-        uint256 _feeRate,
-        address _feeWallet
+        DeploymentParams memory _params
     ) public returns (
-        address fixedPrice,
+        address pricingLogic,
         address minting,
         address refund,
         address fees,
@@ -312,65 +420,90 @@ contract STOFactory is Ownable {
         // Validate inputs
         require(_sto != address(0), "STO address cannot be zero");
         require(_securityToken != address(0), "Security token address cannot be zero");
-        require(_investmentToken != address(0), "Investment token address cannot be zero");
-        require(_fundsReceiver != address(0), "Funds receiver address cannot be zero");
-        require(_rate > 0, "Rate must be greater than zero");
+        require(_params.investmentToken != address(0), "Investment token address cannot be zero");
+        require(_params.fundsReceiver != address(0), "Funds receiver address cannot be zero");
+        require(_params.rate > 0, "Rate must be greater than zero");
 
-        // Deploy the fixed price contract
-        fixedPrice = _deployFixedPrice(_sto, _securityToken, _rate);
+        // Deploy the appropriate pricing logic contract based on strategy
+        pricingLogic = _deployPricingLogic(_sto, _securityToken, _params);
         
         // Deploy the minting, refund, and fees contracts
         (minting, refund, fees) = _deployInvestmentContracts(
             _sto, 
-            _investmentToken, 
-            _feeRate, 
-            _feeWallet
+            _params.investmentToken, 
+            _params.feeRate, 
+            _params.feeWallet
         );
         
         // Group parameters to avoid stack too deep error
-        AuxiliaryParams memory params = AuxiliaryParams({
+        AuxiliaryParams memory auxParams = AuxiliaryParams({
             sto: _sto,
             securityToken: _securityToken,
-            investmentToken: _investmentToken,
-            fundsReceiver: _fundsReceiver,
-            rate: _rate,
+            investmentToken: _params.investmentToken,
+            fundsReceiver: _params.fundsReceiver,
+            rate: _params.rate,
             feesAddress: fees
         });
         
         // Deploy escrow and update references
-        escrow = _deployEscrowAndUpdateReferences(params, minting, refund);
+        escrow = _deployEscrowAndUpdateReferences(auxParams, minting, refund);
         
         // Emit event with all deployed contract addresses
         emit AuxiliaryContractsDeployed(
             _sto,
-            fixedPrice,
+            pricingLogic,
             minting,
             refund,
             fees,
             escrow
         );
         
-        return (fixedPrice, minting, refund, fees, escrow);
+        return (pricingLogic, minting, refund, fees, escrow);
     }
     
     /**
-     * @dev Deploy the fixed price contract
+     * @dev Deploy the appropriate pricing logic contract based on strategy
      * @param _sto Address of the STO contract
      * @param _securityToken Address of the security token
-     * @param _rate Token conversion rate
-     * @return Address of the deployed fixed price contract
+     * @param _params Deployment parameters containing pricing details
+     * @return Address of the deployed pricing logic contract
      */
-    function _deployFixedPrice(
+    function _deployPricingLogic(
         address _sto,
         address _securityToken,
-        uint256 _rate
+        DeploymentParams memory _params
     ) private returns (address) {
-        FixedPrice fixedPriceLogic = new FixedPrice(
-            _securityToken,
-            _rate,
-            _sto
-        );
-        return address(fixedPriceLogic);
+        if (_params.pricingStrategy == PricingStrategy.FixedPrice) {
+            // Deploy fixed price logic
+            FixedPrice fixedPriceLogic = new FixedPrice(
+                _securityToken,
+                _params.rate,
+                _sto
+            );
+            
+            // Set minimum investment if provided
+            if (_params.minInvestment > 0) {
+                fixedPriceLogic.setMinInvestment(_params.minInvestment);
+            }
+            
+            return address(fixedPriceLogic);
+        } 
+        // Note: The following implementations would depend on having the actual
+        // implementations of DutchAuction and TieredPricing contracts.
+        // For now, we'll revert if those strategies are requested.
+        else if (_params.pricingStrategy == PricingStrategy.DutchAuction) {
+            // Placeholder - In a real implementation, we would:
+            // return address(new DutchAuction(_securityToken, _params.startPrice, _params.endPrice, _params.startTime, _params.endTime, _sto));
+            revert("Dutch auction not implemented yet");
+        }
+        else if (_params.pricingStrategy == PricingStrategy.TieredPricing) {
+            // Placeholder - In a real implementation, we would:
+            // return address(new TieredPricing(_securityToken, _params.tierRates, _params.tierAmounts, _sto));
+            revert("Tiered pricing not implemented yet");
+        }
+        
+        // Default to fixed price if strategy is not recognized
+        revert("Unsupported pricing strategy");
     }
     
     /**
