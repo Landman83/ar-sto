@@ -100,17 +100,6 @@
   - More intuitive factory interface
   - Better error handling
 
-### 2. Improve Factory Flexibility
-- **Action**: Add better configuration options for deployments
-- **Implementation**:
-  - Add options for different pricing strategies
-  - Implement version tracking for deployments
-  - Add deployment verification steps
-- **Benefits**:
-  - More adaptable to different STO requirements
-  - Better deployment tracking
-  - Enhanced configurability
-
 ## Pricing Logic Enhancements
 
 ### 1. Strengthen Pricing Logic Interfaces

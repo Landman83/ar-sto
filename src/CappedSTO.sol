@@ -7,7 +7,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@ar-security-token/lib/st-identity-registry/src/interfaces/IAttributeRegistry.sol";
 import "@ar-security-token/src/interfaces/IToken.sol";
 
-import "./storage/CappedSTOStorage.sol";
+import "./storage/STOStorage.sol";
 import "./mixins/Cap.sol";
 import "./utils/Escrow.sol";
 import "./utils/Refund.sol";
@@ -33,7 +33,7 @@ import {VerificationManager} from "./utils/VerificationManager.sol";
  * @title Security Token Offering for standard capped crowdsale
  * @notice Implements a compliant STO with modular investment and finalization logic
  */
-contract CappedSTO is ISTO, CappedSTOStorage, ReentrancyGuard, Cap, Ownable {
+contract CappedSTO is ISTO, STOStorage, ReentrancyGuard, Cap, Ownable {
     // Permission constants
     bytes32 public constant OPERATOR = keccak256("OPERATOR_ROLE");
     bytes32 public constant FACTORY = keccak256("FACTORY");
