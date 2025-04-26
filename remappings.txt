@@ -1,0 +1,5 @@
+@openzeppelin/=lib/openzeppelin-contracts/
+@ar-security-token/=lib/ar-security-token/
+@st-identity-registry/=lib/st-identity-registry/
+
+

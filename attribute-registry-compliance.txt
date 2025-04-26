@@ -1,0 +1,66 @@
+# Attribute Registry-Based Compliance System Summary
+
+## Overview
+The attribute registry system replaces the outdated onchain-ID approach with a more flexible and efficient attribute-based compliance model. Instead of querying complete identity profiles, the system directly associates wallet addresses with specific compliance attributes, enabling more efficient and targeted compliance checks for security token operations.
+
+## Key Components
+
+### AttributeRegistry
+- Core registry contract that associates wallet addresses with compliance attributes
+- Implemented in `lib/st-identity-registry/src/AttributeRegistry.sol`
+- Provides functions to set, verify, and revoke attributes for addresses
+- Supports attribute expiration with standard (365 days) or custom timeframes
+- Includes verification mechanism through trusted verifiers
+
+### Attribute Structure
+- Attributes are stored as key-value pairs (address ’ attributeType ’ boolean)
+- Standard attributes defined in `Attributes.sol` library:
+  - KYC_VERIFIED: Basic KYC verification status
+  - ACCREDITED_INVESTOR: Qualified investor status
+  - COMPANY_INSIDER: Internal company status
+  - Regional attributes (US_PERSON, NON_US_PERSON)
+  - Support for custom attributes via the `customAttribute()` function
+- Each attribute includes metadata such as expiration timestamp
+
+### Verification System
+- VerifierManagement component controls who can set attributes
+- Only authorized verifiers can register/update/revoke attributes
+- Registry owner can assign and change verifiers as needed
+- Provides audit trail through events for attribute changes
+
+### Security Token Integration
+- SecurityToken contract queries AttributeRegistry for compliance checks during:
+  - Token transfers (`transfer()`, `transferFrom()`, `forcedTransfer()`)
+  - Token minting operations (`mint()`)
+- Specifically checks for the ACCREDITED_INVESTOR attribute in receivers
+- AttributeRegistry is set during token initialization and can be updated by owner
+- Works alongside existing ModularCompliance system
+
+### Compliance Modules
+- Modular approach to compliance rules through specialized modules
+- Example: `AccreditedInvestor.sol` module enforces that all token recipients must have ACCREDITED_INVESTOR attribute
+- Modules can be added/removed from ModularCompliance to create custom compliance rulesets
+- Each module interfaces with the AttributeRegistry to check specific attributes
+
+## Compliance Flow
+1. Authorized verifiers register attributes for user addresses in the AttributeRegistry
+2. When users interact with the token (transfers, mints):
+   - The SecurityToken contract verifies the required attributes (e.g., ACCREDITED_INVESTOR)
+   - Compliance modules perform additional rule-based checks
+   - Transaction proceeds only if all checks pass
+3. Attributes have built-in expiration, requiring periodic re-verification
+
+## Advantages Over Onchain-ID System
+- Gas efficiency: Queries specific attributes rather than retrieving entire identity records
+- Simplicity: Direct attribute verification without complex identity resolution
+- Flexibility: Easy to add new attribute types without changing core architecture
+- Timeliness: Attribute expiration ensures compliance status remains current
+- Auditability: All attribute changes are recorded with timestamps and verifier information
+- Modular: New compliance rules can be added by creating additional modules
+
+## Implementation Path for STO
+To integrate this system into the current STO repository, the compliance and minting functionality will need to be updated to:
+1. Query AttributeRegistry instead of onchain-ID records
+2. Check specific attributes relevant to STO participation
+3. Implement appropriate compliance modules for STO-specific rules
+4. Update minting logic to verify investor attributes before token issuance
