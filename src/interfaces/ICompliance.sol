@@ -28,4 +28,19 @@ interface ICompliance {
      * @return True if the user is the owner of the token, false otherwise
      */
     function isTREXOwner(address token, address user) external view returns (bool);
+    
+    /**
+     * @notice Check if an investor can buy tokens in a Rule506c offering
+     * @param token The address of the token
+     * @param investor The address of the investor
+     * @param verificationManager Optional verification manager address
+     * @param isRule506cOffering Whether this is a Rule506c offering
+     * @return True if the investor can buy tokens, false otherwise
+     */
+    function canInvestorBuy(
+        address token, 
+        address investor, 
+        address verificationManager,
+        bool isRule506cOffering
+    ) external view returns (bool);
 }

@@ -1,0 +1,201 @@
+# STO Deployment Guide for New Architecture
+
+## Overview
+
+This document explains how to deploy Security Token Offerings (STOs) using the refactored architecture which eliminates legacy code paths and uses a factory-based deployment approach.
+
+## Deployment Components
+
+A complete STO deployment requires the following components:
+
+1. **Security Token**: The ERC20-compliant security token being offered
+2. **Investment Token**: The ERC20 token used for investment (e.g., USDC)
+3. **Manager Contracts**:
+   - InvestmentManager: Handles token purchases and investor tracking
+   - FinalizationManager: Handles offering completion and token distribution
+   - VerificationManager: Handles investor verification and compliance
+   - Compliance: Handles regulatory compliance rules
+4. **Auxiliary Contracts**:
+   - STOConfig: Stores configuration parameters and serves as single source of truth
+   - Escrow: Holds investor funds during the offering
+   - Refund: Handles refunds if the offering fails
+   - Minting: Handles token issuance to investors
+   - PricingLogic: Defines the token pricing strategy
+
+## Deployment Steps
+
+### 1. Deploy Manager Contracts
+
+First, deploy all required manager and auxiliary contracts:
+
+```solidity
+// Deploy verification manager
+VerificationManager verificationManager = new VerificationManager(
+    address(0), // Will be updated with STO address
+    securityToken,
+    isRule506cOffering
+);
+
+// Deploy compliance contract
+Compliance compliance = new Compliance(address(0)); // Will be updated
+
+// Deploy auxiliary contracts
+Escrow escrow = new Escrow();
+Minting minting = new Minting();
+Refund refund = new Refund();
+PricingLogic pricingLogic = new FixedPrice(); // Or other strategy
+
+// Deploy STOConfig
+STOConfig stoConfig = new STOConfig(
+    address(0), // Will be updated
+    securityToken,
+    isRule506cOffering
+);
+
+// Deploy InvestmentManager
+InvestmentManager investmentManager = new InvestmentManager(
+    address(0), // Will be updated
+    securityToken,
+    address(investmentToken),
+    address(escrow),
+    address(pricingLogic),
+    isRule506cOffering,
+    address(verificationManager),
+    address(compliance)
+);
+
+// Deploy FinalizationManager
+FinalizationManager finalizationManager = new FinalizationManager(
+    address(0), // Will be updated
+    securityToken,
+    address(escrow),
+    address(minting),
+    address(refund),
+    isRule506cOffering
+);
+```
+
+### 2. Deploy the STO Contract
+
+Deploy the main STO contract, providing all required manager contracts:
+
+```solidity
+CappedSTO sto = new CappedSTO(
+    securityToken,
+    isRule506cOffering,
+    address(investmentToken),
+    address(escrow),
+    address(refund),
+    address(minting),
+    address(pricingLogic),
+    address(fees), // Optional
+    address(investmentManager),
+    address(finalizationManager),
+    address(verificationManager),
+    address(compliance),
+    address(stoConfig)
+);
+```
+
+### 3. Update Manager Contracts With STO Address
+
+After deploying the STO, update all manager contracts with the STO address:
+
+```solidity
+// Update verificationManager
+verificationManager.setSTOContract(address(sto));
+
+// Update compliance
+compliance.setSTOContract(address(sto));
+
+// Update escrow
+escrow.setSTOContract(address(sto));
+
+// Update STOConfig
+stoConfig.setSTOContract(address(sto));
+
+// Configure STOConfig
+sto.createSTOConfig(
+    startTime,
+    endTime,
+    hardCap,
+    softCap,
+    rate,
+    fundsReceiver,
+    address(investmentToken)
+);
+
+// Set STOConfig in managers
+investmentManager.setSTOConfig(address(stoConfig));
+finalizationManager.setSTOConfig(address(stoConfig));
+```
+
+### 4. Register the STO as an Agent (for Rule 506c Offerings)
+
+If this is a Rule 506c offering, register the STO as an agent with the security token:
+
+```solidity
+// From the security token owner's account
+securityToken.addAgent(address(sto));
+```
+
+## Factory-Based Deployment
+
+For simplified deployment, you can use a factory pattern:
+
+```solidity
+contract STOFactory {
+    function deployCompleteSTO(
+        address _securityToken,
+        bool _isRule506c,
+        address _investmentToken,
+        uint256 _startTime,
+        uint256 _endTime,
+        uint256 _hardCap,
+        uint256 _softCap,
+        uint256 _rate,
+        address payable _fundsReceiver
+    ) external returns (address) {
+        // 1. Deploy all manager and auxiliary contracts
+        
+        // 2. Deploy the STO contract
+        
+        // 3. Update all managers with STO address
+        
+        // 4. Configure the STO
+        
+        return address(sto);
+    }
+}
+```
+
+## Interacting with the STO
+
+### For Investors
+
+Investors can interact with the STO in the following ways:
+
+1. **Buy Tokens**: Call `sto.buyTokens(beneficiary, amount)` to purchase tokens
+2. **Request Verification**: Call `sto.requestVerification(investor, data)` for verification
+3. **Withdraw Investment**: Call `sto.withdrawInvestment(amount)` to withdraw before the offering closes
+4. **Claim Refund**: Call `sto.claimRefund()` if the offering fails
+
+### For Operators
+
+Operators have additional capabilities:
+
+1. **Verify Investors**: Call `sto.verifyInvestor(investor)` or `sto.batchVerifyInvestors(investors)`
+2. **Execute Orders**: Call `sto.executeSignedOrder(order, signature)` to process signed orders
+3. **Finalize Offering**: Call `sto.finalize()` when the offering is ready to be completed
+4. **Issue Tokens**: For Rule 506c offerings, call `sto.ownerMintTokens(investor, amount)` to mint tokens
+
+## Architecture Benefits
+
+This refactored architecture provides several benefits:
+
+1. **Clear Component Responsibilities**: Each component has a clear and singular responsibility
+2. **Single Source of Truth**: STOConfig is the authoritative source for all configuration parameters
+3. **Reduced State Duplication**: Eliminated redundant state variables across components
+4. **Improved Maintainability**: Clearer code paths make the system easier to understand and modify
+5. **Enhanced Security**: Components are immutable once deployed, reducing the risk of configuration changes
+6. **Better Auditability**: Clear delegation paths make it easier to trace and audit code execution

@@ -7,6 +7,7 @@ import "../libraries/Events.sol";
 import "./Escrow.sol";
 import "./Minting.sol";
 import "./Refund.sol";
+import "./STOConfig.sol";
 
 /**
  * @title FinalizationManager
@@ -30,6 +31,9 @@ contract FinalizationManager is ReentrancyGuard {
     
     // Flag indicating if this is a Rule506c compliant offering
     bool public isRule506cOffering;
+    
+    // Configuration contract for STO parameters
+    STOConfig public stoConfig;
     
     // Events
     event FinalizationCompleted(
@@ -76,6 +80,24 @@ contract FinalizationManager is ReentrancyGuard {
     }
     
     /**
+     * @notice Set the STOConfig contract 
+     * @param _stoConfig Address of the STOConfig contract
+     * @dev This connects the FinalizationManager to the authoritative configuration source
+     */
+    function setSTOConfig(address _stoConfig) external {
+        require(msg.sender == stoContract, "Only STO contract can call");
+        require(_stoConfig != address(0), "STOConfig cannot be zero");
+        
+        // If we already had a configuration contract, don't replace it
+        if (address(stoConfig) != address(0)) {
+            require(address(stoConfig) == _stoConfig, "Config already set");
+            return;
+        }
+        
+        stoConfig = STOConfig(_stoConfig);
+    }
+    
+    /**
      * @notice Finalize the offering
      * @param _endTime The end time of the offering
      * @param _hardCapReached Whether the hard cap has been reached
@@ -101,7 +123,14 @@ contract FinalizationManager is ReentrancyGuard {
         
         // Finalize the escrow if not already finalized
         if (!escrow.isFinalized()) {
-            softCapReached = escrow.isSoftCapReached();
+            // Check if soft cap is reached, preferring STOConfig if available
+            if (address(stoConfig) != address(0)) {
+                softCapReached = stoConfig.isSoftCapReached();
+            } else {
+                softCapReached = escrow.isSoftCapReached();
+            }
+            
+            // Finalize the escrow with soft cap status
             escrow.finalize(softCapReached);
             
             // If soft cap is reached, automatically mint tokens to all investors
@@ -114,7 +143,12 @@ contract FinalizationManager is ReentrancyGuard {
             
             emit FinalizationCompleted(softCapReached, escrow.getTotalTokensSold(), block.timestamp);
         } else {
-            softCapReached = escrow.isSoftCapReached();
+            // Get soft cap status from the most authoritative source
+            if (address(stoConfig) != address(0)) {
+                softCapReached = stoConfig.isSoftCapReached();
+            } else {
+                softCapReached = escrow.isSoftCapReached();
+            }
         }
         
         return softCapReached;
@@ -248,5 +282,27 @@ contract FinalizationManager is ReentrancyGuard {
      */
     function hasClaimedRefund(address _investor) external view returns (bool) {
         return refund.hasClaimedRefund(_investor);
+    }
+    
+    /**
+     * @notice Check if soft cap was reached
+     * @return Whether the soft cap was reached
+     * @dev This is the authoritative source for the soft cap status.
+     *      It uses STOConfig if available, falling back to escrow otherwise.
+     */
+    function isSoftCapReached() external view returns (bool) {
+        if (address(stoConfig) != address(0)) {
+            return stoConfig.isSoftCapReached();
+        }
+        return escrow.isSoftCapReached();
+    }
+    
+    /**
+     * @notice Check if the offering has been finalized
+     * @return Whether the offering has been finalized
+     * @dev Returns the finalization status directly from the escrow
+     */
+    function isFinalized() external view returns (bool) {
+        return escrow.isFinalized();
     }
 }

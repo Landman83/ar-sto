@@ -11,6 +11,7 @@ import "../libraries/Errors.sol";
 import "../libraries/Order.sol";
 import "../interfaces/ISignatures.sol";
 import "../interfaces/IVerificationManager.sol";
+import "../interfaces/ICompliance.sol";
 import "./Escrow.sol";
 import "../mixins/PricingLogic.sol";
 import "./STOConfig.sol";
@@ -51,6 +52,9 @@ contract InvestmentManager is ReentrancyGuard {
     // Signatures contract for verifying orders
     address public signaturesContract;
     
+    // Compliance contract for investor validation
+    ICompliance public compliance;
+    
     // Mapping of investor to nonce (for replay protection)
     mapping(address => uint256) public nonces;
     
@@ -76,6 +80,7 @@ contract InvestmentManager is ReentrancyGuard {
      * @param _pricingLogic Address of the pricing logic contract
      * @param _isRule506c Flag indicating if this is a Rule506c compliant offering
      * @param _verificationManager Address of the verification manager (can be address(0) if not yet created)
+     * @param _compliance Address of the compliance contract
      */
     constructor(
         address _stoContract,
@@ -84,13 +89,15 @@ contract InvestmentManager is ReentrancyGuard {
         address _escrow,
         address _pricingLogic,
         bool _isRule506c,
-        address _verificationManager
+        address _verificationManager,
+        address _compliance
     ) {
-        require(_stoContract != address(0), "STO contract cannot be zero");
-        require(_securityToken != address(0), "Security token cannot be zero");
-        require(_investmentToken != address(0), "Investment token cannot be zero");
-        require(_escrow != address(0), "Escrow cannot be zero");
-        require(_pricingLogic != address(0), "Pricing logic cannot be zero");
+        require(_stoContract != address(0), Errors.ZERO_ADDRESS);
+        require(_securityToken != address(0), Errors.ZERO_ADDRESS);
+        require(_investmentToken != address(0), Errors.ZERO_ADDRESS);
+        require(_escrow != address(0), Errors.ZERO_ADDRESS);
+        require(_pricingLogic != address(0), Errors.ZERO_ADDRESS);
+        require(_compliance != address(0), Errors.ZERO_ADDRESS);
         
         stoContract = _stoContract;
         securityToken = _securityToken;
@@ -99,9 +106,10 @@ contract InvestmentManager is ReentrancyGuard {
         pricingLogic = PricingLogic(_pricingLogic);
         isRule506cOffering = _isRule506c;
         allowBeneficialInvestments = true; // Default to allowing different beneficiaries
+        compliance = ICompliance(_compliance);
         
-        // Create the configuration contract
-        stoConfig = new STOConfig(_stoContract, _securityToken, _isRule506c);
+        // Note: stoConfig should be set via setSTOConfig after construction
+        // Instead of creating a new STOConfig here, we'll use the one set by the STO
         
         // Set the verification manager if provided
         if (_verificationManager != address(0)) {
@@ -110,24 +118,33 @@ contract InvestmentManager is ReentrancyGuard {
     }
     
     /**
+     * @notice Set the STOConfig contract
+     * @param _stoConfig Address of the STOConfig contract
+     * @dev This connects the InvestmentManager to the authoritative configuration source
+     */
+    function setSTOConfig(address _stoConfig) external {
+        require(msg.sender == stoContract, "Unauthorized");
+        require(_stoConfig != address(0), "Zero address");
+        
+        // Set the config regardless of whether it was previously set or not
+        // This allows the STO contract to set the authoritative config
+        stoConfig = STOConfig(_stoConfig);
+    }
+    
+    /**
      * @notice Set the time parameters for the offering
      * @param _startTime The start time of the offering
      * @param _endTime The end time of the offering
      */
     function setTimeParameters(uint256 _startTime, uint256 _endTime) external {
-        require(msg.sender == stoContract, "Only STO contract can call");
-        require(_startTime < _endTime, "Start time must be before end time");
+        require(msg.sender == stoContract, Errors.UNAUTHORIZED);
+        require(_startTime < _endTime, Errors.INVALID_DATES);
         
-        // Update the configuration
-        // Note: This assumes other parameters will be set separately
-        address payable fundsReceiver = payable(address(0)); // Will be set in full configure call
-        stoConfig.configure(
+        // Use the dedicated time parameters configuration method
+        // This avoids issues with validation of other parameters
+        stoConfig.configureTimeParameters(
             _startTime,
             _endTime,
-            0, // Hardcap will be set separately
-            0, // Softcap will be set separately
-            0, // Rate will be set separately
-            fundsReceiver,
             address(investmentToken)
         );
     }
@@ -137,8 +154,8 @@ contract InvestmentManager is ReentrancyGuard {
      * @param _allowBeneficialInvestments Flag to allow/disallow beneficial investments
      */
     function setAllowBeneficialInvestments(bool _allowBeneficialInvestments) external {
-        require(msg.sender == stoContract, "Only STO contract can call");
-        require(_allowBeneficialInvestments != allowBeneficialInvestments, "Value hasn't changed");
+        require(msg.sender == stoContract, Errors.UNAUTHORIZED);
+        require(_allowBeneficialInvestments != allowBeneficialInvestments, Errors.INVALID_PARAMETER);
         allowBeneficialInvestments = _allowBeneficialInvestments;
         
         // Update the configuration
@@ -164,15 +181,15 @@ contract InvestmentManager is ReentrancyGuard {
         nonReentrant 
         returns (uint256 tokens, uint256 refund) 
     {
-        require(msg.sender == stoContract, "Only STO contract can call");
+        require(msg.sender == stoContract, Errors.UNAUTHORIZED);
         
         // Check if the offering allows beneficial investments
         if (!stoConfig.allowBeneficialInvestments()) {
-            require(_beneficiary == _buyer, "Beneficiary address does not match buyer");
+            require(_beneficiary == _buyer, Errors.SELF_TRANSFER_NOT_ALLOWED);
         }
 
-        require(_investedAmount > 0, "Investment amount must be greater than 0");
-        require(!escrow.isSTOClosed(), "STO is closed");
+        require(_investedAmount > 0, Errors.ZERO_INVESTMENT);
+        require(!escrow.isSTOClosed(), Errors.CLOSED);
         
         // Process the transaction
         (tokens, refund) = _processTx(_beneficiary, _investedAmount);
@@ -207,23 +224,23 @@ contract InvestmentManager is ReentrancyGuard {
         nonReentrant 
         returns (uint256 tokens, uint256 refund)
     {
-        require(msg.sender == stoContract, "Only STO contract can call");
-        require(signaturesContract != address(0), "Signatures contract not set");
+        require(msg.sender == stoContract, Errors.UNAUTHORIZED);
+        require(signaturesContract != address(0), Errors.INVALID_OPERATION);
         
         // Verify the investor's signature
         require(ISignatures(signaturesContract).isValidSignature(order, signature, order.investor), 
-            "Invalid investor signature");
+            Errors.INVALID_SIGNATURE);
         
         // Verify the nonce to prevent replay attacks
-        require(nonces[order.investor] == order.nonce, "Invalid nonce");
+        require(nonces[order.investor] == order.nonce, Errors.INVALID_NONCE);
         
         // Increment the nonce
         nonces[order.investor]++;
         
         // Process the order
-        require(order.investmentToken == address(investmentToken), "Invalid investment token");
-        require(order.investmentTokenAmount > 0, "Investment amount must be greater than 0");
-        require(!escrow.isSTOClosed(), "STO is closed");
+        require(order.investmentToken == address(investmentToken), Errors.INVALID_PARAMETER);
+        require(order.investmentTokenAmount > 0, Errors.ZERO_INVESTMENT);
+        require(!escrow.isSTOClosed(), Errors.CLOSED);
         
         // Process the transaction
         (tokens, refund) = _processTx(order.investor, order.investmentTokenAmount);
@@ -256,7 +273,7 @@ contract InvestmentManager is ReentrancyGuard {
      * @return The new nonce value
      */
     function incrementNonce(address investor) external returns (uint256) {
-        require(msg.sender == stoContract, "Only STO contract can call");
+        require(msg.sender == stoContract, Errors.UNAUTHORIZED);
         nonces[investor]++;
         return nonces[investor];
     }
@@ -266,8 +283,8 @@ contract InvestmentManager is ReentrancyGuard {
      * @param _signaturesContract Address of the new signatures contract
      */
     function setSignaturesContract(address _signaturesContract) external {
-        require(msg.sender == stoContract, "Only STO contract can call");
-        require(_signaturesContract != address(0), "Signatures contract cannot be zero");
+        require(msg.sender == stoContract, Errors.UNAUTHORIZED);
+        require(_signaturesContract != address(0), Errors.ZERO_ADDRESS);
         signaturesContract = _signaturesContract;
     }
     
@@ -276,8 +293,8 @@ contract InvestmentManager is ReentrancyGuard {
      * @param _verificationManager Address of the new verification manager
      */
     function setVerificationManager(address _verificationManager) external {
-        require(msg.sender == stoContract, "Only STO contract can call");
-        require(_verificationManager != address(0), "Verification manager cannot be zero");
+        require(msg.sender == stoContract, Errors.UNAUTHORIZED);
+        require(_verificationManager != address(0), Errors.ZERO_ADDRESS);
         verificationManager = IVerificationManager(_verificationManager);
     }
     
@@ -295,7 +312,7 @@ contract InvestmentManager is ReentrancyGuard {
      * @return Whether the investor was newly added
      */
     function addInvestor(address investor) external returns (bool) {
-        require(msg.sender == stoContract, "Only STO contract can call");
+        require(msg.sender == stoContract, Errors.UNAUTHORIZED);
         
         if (!isInvestor[investor]) {
             _investors.push(investor);
@@ -311,7 +328,7 @@ contract InvestmentManager is ReentrancyGuard {
      * @param fundRaiseType The fund raise type enum value
      */
     function setFundRaiseType(uint8 fundRaiseType) external {
-        require(msg.sender == stoContract, "Only STO contract can call");
+        require(msg.sender == stoContract, Errors.UNAUTHORIZED);
         
         // Convert to array of one element
         STOConfig.FundRaiseType[] memory types = new STOConfig.FundRaiseType[](1);
@@ -334,11 +351,11 @@ contract InvestmentManager is ReentrancyGuard {
         uint256 _rate,
         address payable _fundsReceiver
     ) external {
-        require(msg.sender == stoContract, "Only STO contract can call");
-        require(_hardCap > 0, "Hard cap must be greater than 0");
-        require(_softCap > 0, "Soft cap must be greater than 0");
-        require(_rate > 0, "Rate must be greater than 0");
-        require(_fundsReceiver != address(0), "Funds receiver cannot be zero");
+        require(msg.sender == stoContract, Errors.UNAUTHORIZED);
+        require(_hardCap > 0, Errors.ZERO_CAP);
+        require(_softCap > 0, Errors.ZERO_CAP);
+        require(_rate > 0, Errors.ZERO_RATE);
+        require(_fundsReceiver != address(0), Errors.ZERO_ADDRESS);
         
         // Get current time parameters from the configuration
         uint256 startTime = stoConfig.startTime();
@@ -410,21 +427,21 @@ contract InvestmentManager is ReentrancyGuard {
      * @param _investedAmount Amount of investment
      */
     function _preValidatePurchase(address _beneficiary, uint256 _investedAmount) internal view {
-        require(_beneficiary != address(0), "Beneficiary address should not be 0x");
-        require(_investedAmount != 0, "Amount invested should not be equal to 0");
+        require(_beneficiary != address(0), Errors.ZERO_ADDRESS);
+        require(_investedAmount != 0, Errors.ZERO_INVESTMENT);
         
         // Check minimum investment amount if pricing logic specifies one
         uint256 minAmount = pricingLogic.minInvestment();
         if (minAmount > 0) {
-            require(_investedAmount >= minAmount, "Investment amount is below minimum");
+            require(_investedAmount >= minAmount, Errors.BELOW_MIN_INVESTMENT);
         }
         
-        require(_canBuy(_beneficiary), "Investor lacks required attributes");
+        require(_canBuy(_beneficiary), Errors.COMPLIANCE_CHECK_FAILED);
         
         // Check if the offering is within its time bounds using the config
         uint256 startTime = stoConfig.startTime();
         uint256 endTime = stoConfig.endTime();
-        require(block.timestamp >= startTime && block.timestamp <= endTime, "Offering is closed/Not yet started");
+        require(block.timestamp >= startTime && block.timestamp <= endTime, Errors.STO_NOT_ACTIVE);
     }
     
     /**
@@ -433,27 +450,13 @@ contract InvestmentManager is ReentrancyGuard {
      * @return Whether the address can buy tokens
      */
     function _canBuy(address _investor) internal view returns (bool) {
-        if (isRule506cOffering) {
-            // If verification manager is set, use it to check verification status
-            if (address(verificationManager) != address(0)) {
-                return verificationManager.isInvestorVerified(_investor);
-            }
-            
-            // Fallback to direct attribute registry check
-            try IToken(securityToken).attributeRegistry() returns (IAttributeRegistry attributeRegistry) {
-                // Check if investor has the ACCREDITED_INVESTOR attribute
-                try attributeRegistry.hasAttribute(_investor, Attributes.ACCREDITED_INVESTOR) returns (bool hasAttribute) {
-                    return hasAttribute;
-                } catch {
-                    return false;
-                }
-            } catch {
-                return false;
-            }
-        }
-        
-        // For non-regulated offerings, allow any address to buy
-        return true;
+        // Use the compliance contract to check if investor can buy
+        return compliance.canInvestorBuy(
+            securityToken,
+            _investor,
+            address(verificationManager),
+            isRule506cOffering
+        );
     }
 
     /**

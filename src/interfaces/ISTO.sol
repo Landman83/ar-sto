@@ -60,25 +60,23 @@ interface ISTO {
      * @notice Return the total number of tokens sold
      * @return The total number of tokens sold
      */
-    function getTokensSold() external view returns (uint256);
+    function getTotalTokensSold() external view returns (uint256);
     
     /**
-     * @notice Get all investors
-     * @return Array of investor addresses
+     * @notice Get access to the investment manager
+     * @return The investment manager contract
      */
-    function getAllInvestors() external view returns (address[] memory);
+    function getInvestmentManager() external view returns (address);
     
     /**
-     * @notice Check if an investor has received their tokens
-     * @param _investor Address of the investor
-     * @return Whether the investor has received tokens
+     * @notice Get access to the finalization manager
+     * @return The finalization manager contract 
      */
-    function hasReceivedTokens(address _investor) external view returns (bool);
+    function getFinalizationManager() external view returns (address);
     
     /**
-     * @notice Check if an investor has claimed their refund
-     * @param _investor Address of the investor
-     * @return Whether the investor has claimed a refund
+     * @notice Get access to the verification manager
+     * @return The verification manager contract
      */
-    function hasClaimedRefund(address _investor) external view returns (bool);
+    function getVerificationManager() external view returns (address);
 }

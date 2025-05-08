@@ -1,0 +1,283 @@
+```vue
+<template>
+  <div class="sto-details">
+    <div v-if="loading">Loading STO data...</div>
+    <div v-else-if="error">Error: {{ error }}</div>
+    <div v-else-if="stoDetails">
+      <h1>STO Details</h1>
+      
+      <h2>Token Information</h2>
+      <p>Security Token: {{ securityTokenSymbol }} ({{ formatAddress(securityTokenAddress) }})</p>
+      <p>Investment Token: {{ investmentTokenSymbol }} ({{ formatAddress(investmentTokenAddress) }})</p>
+      
+      <h2>Offering Parameters</h2>
+      <p>Start Time: {{ formatDate(startTime) }}</p>
+      <p>End Time: {{ formatDate(endTime) }}</p>
+      <p>Hard Cap: {{ formatTokenAmount(hardCap) }} {{ securityTokenSymbol }}</p>
+      <p>Soft Cap: {{ formatTokenAmount(softCap) }} {{ securityTokenSymbol }}</p>
+      <p>Rate: {{ formatRate(rate) }} {{ securityTokenSymbol }}/{{ investmentTokenSymbol }}</p>
+      <p>Min Investment: {{ formatTokenAmount(minInvestment) }} {{ investmentTokenSymbol }}</p>
+      
+      <h2>Current Status</h2>
+      <p>Tokens Sold: {{ formatTokenAmount(tokensSold) }} / {{ formatTokenAmount(hardCap) }} {{ securityTokenSymbol }}</p>
+      <p>Progress: {{ calculatePercentage(tokensSold, hardCap) }}%</p>
+      <p>Soft Cap Reached: {{ isSoftCapReached ? 'Yes' : 'No' }}</p>
+      <p>STO Closed: {{ isSTOClosed ? 'Yes' : 'No' }}</p>
+    </div>
+  </div>
+</template>
+
+<script>
+import { defineComponent, ref, onMounted } from 'vue';
+import { ethers } from 'ethers';
+
+// ABI definitions - only include the functions we need
+const STO_ABI = [
+  "function getSTODetails() view returns (uint256, uint256, uint256, uint256, uint256, uint256, uint256, uint256, address, bool, bool)",
+  "function securityToken() view returns (address)",
+  "function investmentToken() view returns (address)",
+  "function pricingLogic() view returns (address)"
+];
+
+const ERC20_ABI = [
+  "function name() view returns (string)",
+  "function symbol() view returns (string)",
+  "function decimals() view returns (uint8)"
+];
+
+const PRICING_LOGIC_ABI = [
+  "function minInvestment() view returns (uint256)"
+];
+
+export default defineComponent({
+  name: 'STODetails',
+  
+  props: {
+    stoAddress: {
+      type: String,
+      required: true
+    }
+  },
+  
+  setup(props) {
+    // State variables
+    const provider = ref(null);
+    const stoContract = ref(null);
+    const loading = ref(true);
+    const error = ref(null);
+    const stoDetails = ref(null);
+    
+    // STO data
+    const securityTokenAddress = ref('');
+    const securityTokenName = ref('');
+    const securityTokenSymbol = ref('');
+    const securityTokenDecimals = ref(18);
+    
+    const investmentTokenAddress = ref('');
+    const investmentTokenName = ref('');
+    const investmentTokenSymbol = ref('');
+    const investmentTokenDecimals = ref(18);
+    
+    const startTime = ref(0);
+    const endTime = ref(0);
+    const hardCap = ref('0');
+    const softCap = ref('0');
+    const rate = ref('0');
+    const tokensSold = ref('0');
+    const minInvestment = ref('0');
+    const isSoftCapReached = ref(false);
+    const isSTOClosed = ref(false);
+    
+    // Initialize and load data
+    onMounted(async () => {
+      try {
+        await initializeEthers();
+        await loadSTODetails();
+      } catch (err) {
+        console.error('Error in onMounted:', err);
+        error.value = err.message || 'Failed to initialize';
+      } finally {
+        loading.value = false;
+      }
+    });
+    
+    // Initialize ethers provider and contracts
+    const initializeEthers = async () => {
+      // Check if window.ethereum is available (MetaMask)
+      if (window.ethereum) {
+        try {
+          // Create ethers provider
+          provider.value = new ethers.providers.Web3Provider(window.ethereum);
+          
+          // Create STO contract instance
+          stoContract.value = new ethers.Contract(
+            props.stoAddress,
+            STO_ABI,
+            provider.value
+          );
+        } catch (err) {
+          console.error('Error initializing ethers:', err);
+          throw new Error('Failed to connect to Ethereum provider');
+        }
+      } else {
+        throw new Error('Ethereum provider not found. Please install MetaMask.');
+      }
+    };
+    
+    // Load STO details from the contract
+    const loadSTODetails = async () => {
+      try {
+        // Get security token address
+        securityTokenAddress.value = await stoContract.value.securityToken();
+        
+        // Get STO details
+        const details = await stoContract.value.getSTODetails();
+        startTime.value = details[0].toNumber();
+        endTime.value = details[1].toNumber();
+        hardCap.value = details[2].toString();
+        softCap.value = details[3].toString();
+        rate.value = details[4].toString();
+        // details[5] is fundsRaised
+        // details[6] is investorCount
+        tokensSold.value = details[7].toString();
+        investmentTokenAddress.value = details[8];
+        isSoftCapReached.value = details[9];
+        isSTOClosed.value = details[10];
+        
+        // Get security token details
+        const securityTokenContract = new ethers.Contract(
+          securityTokenAddress.value,
+          ERC20_ABI,
+          provider.value
+        );
+        
+        securityTokenName.value = await securityTokenContract.name();
+        securityTokenSymbol.value = await securityTokenContract.symbol();
+        securityTokenDecimals.value = await securityTokenContract.decimals();
+        
+        // Get investment token details
+        const investmentTokenContract = new ethers.Contract(
+          investmentTokenAddress.value,
+          ERC20_ABI,
+          provider.value
+        );
+        
+        investmentTokenName.value = await investmentTokenContract.name();
+        investmentTokenSymbol.value = await investmentTokenContract.symbol();
+        investmentTokenDecimals.value = await investmentTokenContract.decimals();
+        
+        // Get pricing logic details
+        const pricingLogicAddress = await stoContract.value.pricingLogic();
+        const pricingLogicContract = new ethers.Contract(
+          pricingLogicAddress,
+          PRICING_LOGIC_ABI,
+          provider.value
+        );
+        
+        minInvestment.value = await pricingLogicContract.minInvestment();
+        
+        // Set the stoDetails flag to indicate successful loading
+        stoDetails.value = true;
+      } catch (err) {
+        console.error('Error loading STO details:', err);
+        throw new Error(`Error loading STO details: ${err.message}`);
+      }
+    };
+    
+    // Helper functions for formatting
+    const formatAddress = (address) => {
+      if (!address) return '';
+      return `${address.substring(0, 6)}...${address.substring(address.length - 4)}`;
+    };
+    
+    const formatDate = (timestamp) => {
+      if (!timestamp) return 'N/A';
+      return new Date(timestamp * 1000).toLocaleString();
+    };
+    
+    const formatTokenAmount = (amount, decimals = 18) => {
+      if (!amount) return '0';
+      return ethers.utils.formatUnits(amount, decimals);
+    };
+    
+    const formatRate = (rate) => {
+      if (!rate) return '0';
+      return ethers.utils.formatUnits(rate, 18);
+    };
+    
+    const calculatePercentage = (value, total) => {
+      if (!value || !total) return '0';
+      const valueNum = ethers.BigNumber.from(value);
+      const totalNum = ethers.BigNumber.from(total);
+      if (totalNum.isZero()) return '0';
+      
+      return valueNum.mul(100).div(totalNum).toString();
+    };
+    
+    return {
+      loading,
+      error,
+      stoDetails,
+      securityTokenAddress,
+      securityTokenName,
+      securityTokenSymbol,
+      securityTokenDecimals,
+      investmentTokenAddress,
+      investmentTokenName,
+      investmentTokenSymbol,
+      investmentTokenDecimals,
+      startTime,
+      endTime,
+      hardCap,
+      softCap,
+      rate,
+      tokensSold,
+      minInvestment,
+      isSoftCapReached,
+      isSTOClosed,
+      formatAddress,
+      formatDate,
+      formatTokenAmount,
+      formatRate,
+      calculatePercentage
+    };
+  }
+});
+</script>
+```
+
+Usage:
+
+```vue
+<!-- In the parent component -->
+<template>
+  <STODetails :stoAddress="stoContractAddress" />
+</template>
+
+<script>
+import STODetails from './STODetails.vue';
+
+export default {
+  components: {
+    STODetails
+  },
+  data() {
+    return {
+      stoContractAddress: '0xA9233C9ea1f0f36ac234c48d688920ADaed27aEF' // Your STO contract address
+    };
+  }
+};
+</script>
+```
+
+Key aspects of this implementation:
+
+1. Uses ethers.js v5.7.2 specifically
+2. Focuses purely on functionality with no styling
+3. Uses Vue 3 Composition API with `defineComponent` and `setup()`
+4. Handles loading, success, and error states
+5. Minimal ABI definitions (only including the functions needed)
+6. Proper formatting for addresses, dates, and token amounts
+7. Handles both security token and investment token details
+8. Displays all important STO parameters and current status
+9. Includes progress tracking with percentage calculation

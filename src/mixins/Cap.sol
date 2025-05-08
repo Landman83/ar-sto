@@ -126,7 +126,7 @@ abstract contract Cap {
      * @dev Returns the total tokens sold
      * @return The total tokens sold
      */
-    function getTotalTokensSold() public view returns (uint256) {
+    function getTotalTokensSold() public view virtual returns (uint256) {
         return _totalTokensSold;
     }
     
