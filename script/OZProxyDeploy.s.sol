@@ -95,7 +95,7 @@ contract OZProxyDeployScript is Script {
     // Deployment parameters
     bool private constant IS_RULE_506C = true;
     uint256 private constant START_TIME_BUFFER = 1 minutes; // Buffer to ensure start time is in the future
-    uint256 private constant OFFERING_DURATION = 1 hours;
+    uint256 private constant OFFERING_DURATION = 6 hours;   // Changed from 1 hour to 6 hours
     uint256 private constant FEE_RATE = 200; // 2% fee (in basis points)
     
     // For tracking deployment info (similar to STOFactory.STODeploymentInfo)
