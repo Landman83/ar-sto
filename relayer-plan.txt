@@ -1,0 +1,239 @@
+# STO Signed Order Submission Plan
+
+## Overview
+This document outlines our approach to implementing and testing signed orders for our Security Token Offering (STO) system. The goal is to establish a secure, efficient mechanism for users to submit investment orders without directly interacting with the STO contract.
+
+## Current Architecture
+- `CappedSTO.sol` includes an `executeSignedOrder()` function restricted to accounts with OPERATOR_ROLE
+- `Signatures.sol` handles EIP-712 signature verification
+- `Order.sol` defines the structure for investment orders
+- Current implementation restricts order execution to operators only
+
+## Challenges
+1. Regular users cannot submit signed orders directly due to OPERATOR_ROLE restriction
+2. Frontend applications throw "Invalid operation" errors when attempting to submit signed orders
+3. Need to maintain compliance checks while enabling a streamlined user experience
+4. Current relayer approach creates centralization concerns
+
+## Solution: Meta-Transactions with EIP-2771 + EIP-712
+
+### Architecture
+1. **User Role**:
+   - Signs orders with their private key using EIP-712 (maintaining our security model)
+   - Includes: investor address, investment token, amount, nonce, expiration timestamp
+   - Order signature serves as cryptographic proof of intent
+   - No gas expenditure at this stage
+
+2. **Meta-Transaction Approach (EIP-2771)**:
+   - Signed orders wrapped in EIP-2771 meta-transactions
+   - Removes need for OPERATOR_ROLE restriction
+   - Any entity can submit the transaction (paying gas)
+   - Preserves the original signer context through the trusted forwarder pattern
+
+3. **Centralized Relayer Service (Initial Implementation)**:
+   - Backend API service that accepts signed orders via HTTP
+   - Verifies signatures off-chain
+   - Wraps and submits the transactions as meta-transactions
+   - Acts as a bridge between users and the blockchain
+   - Future-compatible with decentralized relayers
+
+4. **Modified STO Contract**:
+   - Implements EIP-2771 trusted forwarder pattern
+   - Removes OPERATOR_ROLE check for meta-transactions
+   - Still performs all compliance checks (attribute registry validation)
+   - Uses recovered signer from meta-transaction as the investor
+
+### Data Flow
+1. User signs order with EIP-712 (parameters, nonce, expiration)
+2. Signed order transmitted to relayer service API
+3. Relayer wraps the signed order in a meta-transaction
+4. Relayer submits transaction to trusted forwarder
+5. Forwarder calls STO with the original user as msg.sender
+6. STO verifies the order signature, processes investment
+7. User receives confirmation once transaction is confirmed
+
+### Security Features
+1. **Dual Signature Verification**:
+   - EIP-712 signature verifies the order details
+   - Meta-transaction signature verifies the transaction submission
+   - Both signatures must be valid for execution
+
+2. **Nonce Management**:
+   - Each user maintains an incrementing nonce for orders
+   - Separate nonce for meta-transactions
+   - Prevents replay attacks at both levels
+
+3. **Expiration Timestamps**:
+   - Orders include an expiration time
+   - Meta-transactions can have their own deadlines
+   - Prevents execution of stale orders
+
+4. **Signature Verification**:
+   - EIP-712 structured data signing (human-readable)
+   - Clear separation between order intent and transaction execution
+   - Ensures order authenticity and integrity
+
+5. **STO Address in Signature**:
+   - Prevents cross-contract replay attacks
+   - Orders can only be executed on intended STO contract
+
+## Implementation Changes
+
+### Smart Contract Modifications
+1. **Add EIP-2771 Support**:
+   - Implement ERC2771Context from OpenZeppelin
+   - Replace msg.sender with _msgSender() in key functions
+   - Deploy a trusted forwarder contract
+
+2. **Modify executeSignedOrder Function**:
+   - Remove OPERATOR_ROLE restriction for calls from trusted forwarder
+   - Ensure order.investor matches the meta-transaction signer
+   - Continue using EIP-712 signature verification
+
+3. **Add Meta-Transaction Support**:
+   - Add necessary functions to handle meta-transaction data
+   - Ensure compatibility with existing signature verification
+
+### Relayer Service Implementation
+1. **API Endpoints**:
+   - POST /api/submitOrder - Accepts signed orders
+   - GET /api/orderStatus/:id - Checks status of submitted order
+   - GET /api/nonce/:address - Retrieves current nonce for address
+
+2. **Meta-Transaction Wrapping**:
+   - Create meta-transactions from signed orders
+   - Forward to trusted forwarder contract
+   - Monitor transaction status
+
+3. **Serverless Architecture** (Initial Implementation):
+   - AWS Lambda or similar for cost-efficiency
+   - Scaling based on submission volume
+   - Secure key management (AWS KMS, HashiCorp Vault)
+
+## Testing Implementation
+
+### CLI Testing Script Approach
+We'll create a script that simulates user, relayer, and forwarder functionality to test the entire flow:
+
+#### Setup
+1. Load environment variables:
+   - User private key
+   - Relayer account (for gas payments)
+   - STO contract address
+   - Forwarder contract address
+   - RPC URL
+
+#### Test Flow
+1. **Initialize**:
+   - Connect to blockchain using RPC
+   - Load STO contract instance
+   - Load forwarder contract instance
+   - Check initial balances and STO stats
+
+2. **User Actions** (signing):
+   - Generate and sign order with EIP-712
+     - Investor address (derived from private key)
+     - Investment token address
+     - Investment amount
+     - Current nonce from STO contract
+     - Expiration timestamp (e.g., now + 1 hour)
+   - Output order details and signature for verification
+
+3. **Meta-Transaction Creation**:
+   - Create meta-transaction request
+     - Target: STO contract
+     - Function: executeSignedOrder
+     - Parameters: order and signature
+     - Gas parameters
+   - Sign meta-transaction request
+
+4. **Relayer Actions** (submitting):
+   - Verify both signatures off-chain
+   - Submit meta-transaction to trusted forwarder
+   - Handle errors and retry if needed
+   - Track transaction hash
+
+5. **Verification**:
+   - Poll for transaction confirmation
+   - Check updated balances and STO stats
+   - Verify funds were properly recorded in STO
+   - Confirm nonces were incremented
+
+6. **Error Testing**:
+   - Test with invalid order signatures
+   - Test with invalid meta-transaction signatures
+   - Test with expired timestamps
+   - Test with incorrect nonces
+   - Test with insufficient token balances
+
+### Script Structure
+```
+- init.js - Setup and connection configuration
+- sign.js - Order and meta-tx signing functionality
+- submit.js - Meta-transaction submission
+- verify.js - Result verification and testing utilities
+- test.js - Main test script orchestrating the process
+- config.js - Configuration and environment variable management
+```
+
+## Timeline
+1. **Phase 1 - Contract Modifications** (2-3 days):
+   - Add EIP-2771 support to STO contract
+   - Deploy and test trusted forwarder contract
+   - Update signature verification for meta-transactions
+
+2. **Phase 2 - CLI Testing** (1-2 days):
+   - Implement CLI script
+   - Test both direct and meta-transaction flows
+   - Verify signature and security guarantees
+
+3. **Phase 3 - Relayer Development** (2-3 days):
+   - Develop API service
+   - Implement meta-transaction creation
+   - Add transaction submission and monitoring
+
+4. **Phase 4 - Frontend Integration** (2 days):
+   - Update web application to use meta-transaction flow
+   - Implement combined signing interface
+   - Add status tracking and error handling
+
+5. **Phase 5 - Security Review and Deployment** (1-2 days):
+   - Code review focusing on meta-transaction security
+   - Penetration testing of relayer service
+   - Production deployment with monitoring
+
+## Future Decentralization Path
+While starting with a centralized relayer service for simplicity, this architecture enables a path to full decentralization:
+
+1. **Phase 1: Centralized Relayer** (Current Plan)
+   - Single trusted service submits meta-transactions
+   - Simplifies initial implementation and testing
+
+2. **Phase 2: Multiple Relayers**
+   - Allow multiple authorized relayers
+   - Users can choose their relayer
+   - Basic redundancy and availability improvements
+
+3. **Phase 3: Permissionless Relayers**
+   - Any entity can relay transactions
+   - Gas refund or token incentive mechanisms
+   - Complete decentralization of transaction submission
+
+4. **Phase 4: Integration with Public Relayer Networks**
+   - Connect with established networks like OpenGSN
+   - Leverage existing infrastructure and security
+
+## Success Criteria
+1. Users can submit orders without gas fees
+2. Orders are properly executed on the blockchain
+3. Invalid orders are rejected appropriately
+4. System maintains security and compliance requirements
+5. Architecture provides path to full decentralization
+6. Process is well-documented for future extensions
+
+## Future Enhancements
+1. Batch processing of multiple orders
+2. Integration with split-key architecture
+3. Support for multiple investment tokens
+4. Enhanced monitoring and analytics dashboard
+5. Permissionless relayer network integration

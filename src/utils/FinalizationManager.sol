@@ -162,13 +162,39 @@ contract FinalizationManager is ReentrancyGuard {
         // Process refunds in batches to avoid gas limit issues
         refund.processRefundsForAll(_investors);
     }
-    
+
+    /**
+     * @notice Public function to process refunds for all investors
+     * @param _investors Array of investor addresses
+     */
+    function processRefunds(address[] calldata _investors) external {
+        require(msg.sender == stoContract, "Only STO contract can call");
+        require(escrow.isFinalized(), "Escrow not finalized");
+        require(!stoConfig.isSoftCapReached(), "Soft cap reached, refunds not needed");
+
+        _processRefundsForAllInvestors(_investors);
+    }
+
     /**
      * @notice Mint tokens to all investors
      * @param _investors Array of investor addresses
      */
     function _mintTokensToAllInvestors(address[] calldata _investors) internal {
         minting.batchMintAndDeliverTokens(_investors);
+    }
+
+    /**
+     * @notice Public function to process minting for all investors
+     * @param _investors Array of investor addresses
+     */
+    function processMinting(address[] calldata _investors) external {
+        require(msg.sender == stoContract, "Only STO contract can call");
+        require(escrow.isFinalized(), "Escrow not finalized");
+        require(stoConfig.isSoftCapReached(), "Soft cap not reached, minting not possible");
+
+        _mintTokensToAllInvestors(_investors);
+
+        emit FinalizationCompleted(true, escrow.getTotalTokensSold(), block.timestamp);
     }
     
     /**

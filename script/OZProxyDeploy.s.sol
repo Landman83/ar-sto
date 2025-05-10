@@ -16,6 +16,7 @@ import "../src/utils/Refund.sol";
 import "../src/utils/Minting.sol";
 import "../src/mixins/FixedPrice.sol";
 import "../src/utils/Fees.sol";
+import "../src/utils/Signatures.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@ar-security-token/src/interfaces/IToken.sol";
 import "@ar-security-token/lib/st-identity-registry/src/interfaces/IAttributeRegistry.sol";
@@ -114,6 +115,7 @@ contract OZProxyDeployScript is Script {
         address stoConfig;
         address proxyAdmin;
         address implementation;
+        address signatures;
     }
     
     // We'll use this to store and organize deployment info
@@ -130,6 +132,10 @@ contract OZProxyDeployScript is Script {
         address securityToken = vm.envAddress(ENV_SECURITY_TOKEN);
         address investmentToken = vm.envAddress(ENV_INVESTMENT_TOKEN);
         address deployer = vm.envAddress(ENV_DEPLOYER_ADDRESS);
+        
+        // Get the current nonce of the deployer to track deployment addresses
+        uint256 currentNonce = vm.getNonce(deployer);
+        console.log("Deployer's current nonce:", currentNonce);
         
         // Load numerical parameters with fallbacks
         uint256 hardCap = vm.envOr(ENV_HARD_CAP, uint256(1_000_000 * 10**18));  // Default: 1M tokens
@@ -317,6 +323,11 @@ contract OZProxyDeployScript is Script {
         );
         console.log("VerificationManager deployed at:", address(verificationManager));
         deploymentInfo.verificationManager = address(verificationManager);
+
+        // Deploy Signatures contract for EIP-712 signature verification
+        Signatures signatures = new Signatures("SecurityTokenOffering", "1");
+        console.log("Signatures contract deployed at:", address(signatures));
+        deploymentInfo.signatures = address(signatures);
         
         // Add a call to set the manager component in the proxy to solve the immutable field issue
         try sto.setManagerComponents(
@@ -528,10 +539,10 @@ contract OZProxyDeployScript is Script {
             console.log("STO configured with contracts successfully");
         } catch Error(string memory reason) {
             console.log("Failed to configure STO with contracts. Reason:", reason);
-            
+
             // Fallback: If the full configuration fails, try setting components individually
             console.log("Attempting to update critical components individually...");
-            
+
             try sto.setPricingLogic(address(fixedPrice)) {
                 console.log("- PricingLogic set successfully");
             } catch Error(string memory pricingReason) {
@@ -541,6 +552,56 @@ contract OZProxyDeployScript is Script {
             }
         } catch {
             console.log("Failed to configure STO with contracts (unknown error)");
+        }
+
+        // The deployer address needs OPERATOR_ROLE to set the Signatures contract
+        bytes32 operatorRole;
+        bool hasOperatorRole = false;
+        
+        // Get the OPERATOR_ROLE value and check if deployer has it
+        try sto.OPERATOR_ROLE() returns (bytes32 role) {
+            operatorRole = role;
+            console.log("Retrieved OPERATOR_ROLE value");
+            
+            try sto.hasRole(operatorRole, deployer) returns (bool hasRole) {
+                hasOperatorRole = hasRole;
+                if (hasRole) {
+                    console.log("Deployer already has OPERATOR_ROLE");
+                } else {
+                    console.log("Deployer does not have OPERATOR_ROLE yet");
+                }
+            } catch {
+                console.log("Failed to check if deployer has OPERATOR_ROLE");
+            }
+        } catch {
+            console.log("Failed to get OPERATOR_ROLE value");
+        }
+        
+        // Grant OPERATOR_ROLE to deployer if needed
+        if (!hasOperatorRole) {
+            try sto.grantRole(operatorRole, deployer) {
+                console.log("Successfully granted OPERATOR_ROLE to deployer");
+                hasOperatorRole = true;
+            } catch Error(string memory reason) {
+                console.log("Failed to grant OPERATOR_ROLE to deployer. Reason:", reason);
+            } catch {
+                console.log("Failed to grant OPERATOR_ROLE to deployer (unknown error)");
+            }
+        }
+        
+        // Set the Signatures contract on the STO
+        // In the new architecture, only the STO needs to be configured
+        try sto.setSignaturesContract(address(signatures)) {
+            console.log("Signatures contract set successfully on STO");
+            console.log("Signed orders should now work properly");
+        } catch Error(string memory reason) {
+            console.log("Failed to set Signatures contract. Reason:", reason);
+            console.log("WARNING: Signed orders will not work until this is fixed");
+            console.log("To fix manually: Grant OPERATOR_ROLE to an address and call sto.setSignaturesContract(signatures)");
+        } catch {
+            console.log("Failed to set Signatures contract (unknown error)");
+            console.log("WARNING: Signed orders will not work until this is fixed");
+            console.log("To fix manually: Grant OPERATOR_ROLE to an address and call sto.setSignaturesContract(signatures)");
         }
         
         // -----------------------------------------------------------------
@@ -622,6 +683,7 @@ contract OZProxyDeployScript is Script {
         console.log("Compliance:", address(compliance));
         console.log("InvestmentManager:", address(investmentManager));
         console.log("FinalizationManager:", address(finalizationManager));
+        console.log("Signatures Contract:", address(signatures));
         
         console.log("\n=== NEXT STEPS ===");
         console.log("1. The STO is now deployed and ready to accept investments");
@@ -632,5 +694,13 @@ contract OZProxyDeployScript is Script {
         console.log("To upgrade the implementation in the future:");
         console.log("1. Deploy a new implementation contract");
         console.log("2. Call proxyAdmin.upgrade(proxy, newImplementation)");
+        
+        // Record these addresses in your .env file for future reference
+        console.log("\n=== IMPORTANT: SAVE THESE ADDRESSES ===");
+        console.log("STO_ADDRESS=", deploymentInfo.sto);
+        console.log("SECURITY_TOKEN_ADDRESS=", deploymentInfo.securityToken);
+        console.log("INVESTMENT_TOKEN=", investmentToken);
+        console.log("SIGNATURE_CONTRACT=", deploymentInfo.signatures);
+        console.log("INVESTMENT_MANAGER=", deploymentInfo.investmentManager);
     }
 }

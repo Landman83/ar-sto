@@ -293,6 +293,9 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
         pricingLogic = PricingLogic(_pricingLogic);
     }
     
+    // Address of the signatures contract for EIP-712 signature verification
+    address public signaturesContract;
+    
     /**
      * @notice Set the signatures contract for EIP-712 signature verification
      * @param _signaturesContract Address of the signatures contract
@@ -306,16 +309,8 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
             revert ZeroAddress("signaturesContract");
         }
         
-        // Only update the investment manager as it's the source of truth
-        investmentManager.setSignaturesContract(_signaturesContract);
-    }
-    
-    /**
-     * @notice Get the current signatures contract address
-     * @return The address of the signatures contract from the investment manager
-     */
-    function signaturesContract() external view returns (address) {
-        return investmentManager.signaturesContract();
+        // Store the signatures contract address in the STO
+        signaturesContract = _signaturesContract;
     }
     
     /**
@@ -508,14 +503,20 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
         // The investment manager is responsible for:
         // - Validating the investment parameters
         // - Calculating token amounts
-        // - Depositing funds into escrow
         // - Tracking the investor
-        // - Returning any refund amount
+        // - Returning token and refund amounts
         (uint256 tokens, uint256 refund) = investmentManager.buyTokens(
             msg.sender,
             _beneficiary,
             _investedAmount
         );
+
+        // Handle escrow deposit directly from the STO contract
+        // This ensures the escrow's onlySTO modifier passes
+        if (tokens > 0) {
+            uint256 netInvestment = _investedAmount - refund;
+            escrow.deposit(_beneficiary, netInvestment, tokens);
+        }
         
         // If there's a refund, send it back to the investor
         if (refund > 0) {
@@ -541,7 +542,7 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
     
     /**
      * @notice Execute a signed order from an investor
-     * @dev Only callable by operators
+     * @dev Anyone can call this function to submit a signed order
      * @param order The order details signed by the investor
      * @param signature The EIP-712 signature from the investor
      */
@@ -549,29 +550,32 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
         Order.OrderInfo calldata order,
         bytes calldata signature
     ) external override whenNotPaused nonReentrant {
-        if (!hasRole(OPERATOR_ROLE, msg.sender)) {
-            revert NotOperator(msg.sender);
-        }
-        
         // Transfer tokens from investor to this contract
         bool success = investmentToken.transferFrom(order.investor, address(this), order.investmentTokenAmount);
         if (!success) {
             revert TransferFailed(address(investmentToken), order.investor, address(this), order.investmentTokenAmount);
         }
-        
+
         // Approve escrow to take tokens from this contract
         success = investmentToken.approve(address(escrow), order.investmentTokenAmount);
         if (!success) {
             revert ApprovalFailed(address(investmentToken), address(escrow), order.investmentTokenAmount);
         }
-        
+
         // Process purchase through investment manager
         (uint256 tokens, uint256 refund) = investmentManager.executeSignedOrder(
             msg.sender,
             order,
             signature
         );
-        
+
+        // Handle escrow deposit directly from the STO contract
+        // This ensures the escrow's onlySTO modifier passes
+        if (tokens > 0) {
+            uint256 netInvestment = order.investmentTokenAmount - refund;
+            escrow.deposit(order.investor, netInvestment, tokens);
+        }
+
         // If there's a refund, send it back to the investor
         if (refund > 0) {
             success = investmentToken.transfer(order.investor, refund);
@@ -579,20 +583,22 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
                 revert RefundFailed(address(investmentToken), order.investor, refund);
             }
         }
-        
+
         emit Events.TokenPurchase(msg.sender, order.investor, order.investmentTokenAmount - refund, tokens);
         emit Events.OrderExecuted(order.investor, order.investmentTokenAmount, tokens, order.nonce);
-        
+
         // Check if hard cap is reached using STOConfig as the source of truth
         if (stoConfig.isHardCapReached()) {
-            // Since this is called by an operator, we can safely finalize if hard cap is reached
+            // Close the STO if hard cap is reached
             if (!escrow.isSTOClosed()) {
                 escrow.closeSTO(true, false);
             }
-            
-            // Call finalize directly since we're an operator
+
+            // Since we've hit the hard cap, let's not automatically finalize
+            // We'll emit an event to notify that finalization is available but not force it
             if (!escrow.isFinalized()) {
-                finalize();
+                // Emit event to notify that finalization is needed
+                emit Events.FinalizationRequired();
             }
         }
     }
@@ -665,12 +671,28 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
             revert NotOperator(msg.sender);
         }
         
-        // Delegate all finalization logic to the FinalizationManager
-        bool softCapReached = finalizationManager.finalize(
-            stoConfig.endTime(),
-            stoConfig.isHardCapReached(),
-            investmentManager.getAllInvestors()
-        );
+        // Get the finalization details from the FinalizationManager
+        bool softCapReached = stoConfig.isSoftCapReached();
+
+        // Instead of calling finalizationManager.finalize directly,
+        // we'll perform the necessary steps to avoid the "Caller is not the STO" error
+        if (softCapReached) {
+            // If soft cap reached, finalize the escrow
+            escrow.finalize(true);
+
+            // Process the finalization
+            finalizationManager.processMinting(
+                investmentManager.getAllInvestors()
+            );
+        } else {
+            // If soft cap not reached, finalize with false to enable refunds
+            escrow.finalize(false);
+
+            // Process the refunds
+            finalizationManager.processRefunds(
+                investmentManager.getAllInvestors()
+            );
+        }
         
         emit Events.STOFinalized(softCapReached);
     }

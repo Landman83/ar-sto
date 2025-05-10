@@ -121,8 +121,8 @@ contract STOConfig {
      * @notice Configure the offering parameters
      * @param _startTime Start time of the offering
      * @param _endTime End time of the offering
-     * @param _hardCap Hard cap for the offering
-     * @param _softCap Soft cap for the offering
+     * @param _hardCap Hard cap for the offering (in raw tokens, will be converted to wei)
+     * @param _softCap Soft cap for the offering (in raw tokens, will be converted to wei)
      * @param _rate Exchange rate for investment tokens to security tokens
      * @param _fundsReceiver Address to receive investment funds
      * @param _investmentToken Address of the token used for investment
@@ -143,15 +143,16 @@ contract STOConfig {
         require(_rate > 0, "Rate must be greater than 0");
         require(_fundsReceiver != address(0), "Funds receiver cannot be zero");
         require(_investmentToken != address(0), "Investment token cannot be zero");
-        
+
         startTime = _startTime;
         endTime = _endTime;
-        hardCap = _hardCap;
-        softCap = _softCap;
+        // Convert raw token units to wei (18 decimals) for consistent comparison with token amounts
+        hardCap = _hardCap * 10**18;
+        softCap = _softCap * 10**18;
         rate = _rate;
         fundsReceiver = _fundsReceiver;
         investmentToken = _investmentToken;
-        
+
         emit ConfigUpdated(startTime, endTime, hardCap, softCap, rate);
     }
     
@@ -208,19 +209,35 @@ contract STOConfig {
     }
     
     /**
-     * @notice Get the hard cap
-     * @return The hard cap
+     * @notice Get the hard cap in wei (18 decimals)
+     * @return The hard cap in wei
      */
     function getHardCap() external view returns (uint256) {
         return hardCap;
     }
-    
+
     /**
-     * @notice Get the soft cap
-     * @return The soft cap
+     * @notice Get the hard cap in raw token units (for display purposes)
+     * @return The hard cap in raw token units
+     */
+    function getHardCapInTokens() external view returns (uint256) {
+        return hardCap / 10**18;
+    }
+
+    /**
+     * @notice Get the soft cap in wei (18 decimals)
+     * @return The soft cap in wei
      */
     function getSoftCap() external view returns (uint256) {
         return softCap;
+    }
+
+    /**
+     * @notice Get the soft cap in raw token units (for display purposes)
+     * @return The soft cap in raw token units
+     */
+    function getSoftCapInTokens() external view returns (uint256) {
+        return softCap / 10**18;
     }
     
     /**

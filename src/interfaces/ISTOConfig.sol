@@ -84,18 +84,32 @@ interface ISTOConfig {
     function setAllowBeneficialInvestments(bool _allowBeneficialInvestments) external;
     
     /**
-     * @notice Get the hard cap
-     * @return The hard cap
-     * @dev Returns the maximum number of tokens available in the offering
+     * @notice Get the hard cap in wei (18 decimals)
+     * @return The hard cap in wei (18 decimals)
+     * @dev Returns the maximum number of tokens available in the offering in wei
      */
     function getHardCap() external view returns (uint256);
-    
+
     /**
-     * @notice Get the soft cap
-     * @return The soft cap
-     * @dev Returns the minimum number of tokens that must be sold for success
+     * @notice Get the hard cap in raw token units (for display purposes)
+     * @return The hard cap in raw token units
+     * @dev Returns the maximum number of tokens available in the offering in raw tokens
+     */
+    function getHardCapInTokens() external view returns (uint256);
+
+    /**
+     * @notice Get the soft cap in wei (18 decimals)
+     * @return The soft cap in wei (18 decimals)
+     * @dev Returns the minimum number of tokens that must be sold for success in wei
      */
     function getSoftCap() external view returns (uint256);
+
+    /**
+     * @notice Get the soft cap in raw token units (for display purposes)
+     * @return The soft cap in raw token units
+     * @dev Returns the minimum number of tokens that must be sold for success in raw tokens
+     */
+    function getSoftCapInTokens() external view returns (uint256);
     
     /**
      * @notice Check if soft cap is reached

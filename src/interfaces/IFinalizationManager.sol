@@ -35,6 +35,24 @@ interface IFinalizationManager {
         bool _hardCapReached,
         address[] calldata _investors
     ) external returns (bool softCapReached);
+
+    /**
+     * @notice Process minting for all investors after escrow is finalized
+     * @param _investors Array of all investor addresses
+     * @dev This function handles the token minting part of finalization
+     *      It's separated from finalize() to allow the STO contract to call escrow.finalize() directly
+     *      Only callable when soft cap is reached and escrow is already finalized
+     */
+    function processMinting(address[] calldata _investors) external;
+
+    /**
+     * @notice Process refunds for all investors after escrow is finalized
+     * @param _investors Array of all investor addresses
+     * @dev This function handles the refund part of finalization
+     *      It's separated from finalize() to allow the STO contract to call escrow.finalize() directly
+     *      Only callable when soft cap is NOT reached and escrow is already finalized
+     */
+    function processRefunds(address[] calldata _investors) external;
     
     /**
      * @notice Issue tokens to a specific investor

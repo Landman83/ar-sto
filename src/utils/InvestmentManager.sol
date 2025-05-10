@@ -12,6 +12,7 @@ import "../libraries/Order.sol";
 import "../interfaces/ISignatures.sol";
 import "../interfaces/IVerificationManager.sol";
 import "../interfaces/ICompliance.sol";
+import "../interfaces/ISTO.sol";
 import "./Escrow.sol";
 import "../mixins/PricingLogic.sol";
 import "./STOConfig.sol";
@@ -49,9 +50,6 @@ contract InvestmentManager is ReentrancyGuard {
     // Flag for allowing beneficial investments
     bool public allowBeneficialInvestments;
 
-    // Signatures contract for verifying orders
-    address public signaturesContract;
-    
     // Compliance contract for investor validation
     ICompliance public compliance;
     
@@ -225,10 +223,20 @@ contract InvestmentManager is ReentrancyGuard {
         returns (uint256 tokens, uint256 refund)
     {
         require(msg.sender == stoContract, Errors.UNAUTHORIZED);
-        require(signaturesContract != address(0), Errors.INVALID_OPERATION);
+        
+        // Get the signatures contract address from the STO contract
+        address sigContractAddress;
+        try ISTO(stoContract).signaturesContract() returns (address addr) {
+            sigContractAddress = addr;
+        } catch {
+            sigContractAddress = address(0);
+        }
+        
+        // Require a valid signatures contract
+        require(sigContractAddress != address(0), Errors.INVALID_OPERATION);
         
         // Verify the investor's signature
-        require(ISignatures(signaturesContract).isValidSignature(order, signature, order.investor), 
+        require(ISignatures(sigContractAddress).isValidSignature(order, signature, order.investor), 
             Errors.INVALID_SIGNATURE);
         
         // Verify the nonce to prevent replay attacks
@@ -278,15 +286,7 @@ contract InvestmentManager is ReentrancyGuard {
         return nonces[investor];
     }
     
-    /**
-     * @notice Set the signatures contract
-     * @param _signaturesContract Address of the new signatures contract
-     */
-    function setSignaturesContract(address _signaturesContract) external {
-        require(msg.sender == stoContract, Errors.UNAUTHORIZED);
-        require(_signaturesContract != address(0), Errors.ZERO_ADDRESS);
-        signaturesContract = _signaturesContract;
-    }
+    // Removed setSignaturesContract method - signatures contract is now managed by the STO
     
     /**
      * @notice Set the verification manager
@@ -391,20 +391,21 @@ contract InvestmentManager is ReentrancyGuard {
         
         // Calculate token amount to be created
         (tokens, refund) = _getTokenAmount(_investedAmount);
-        
+
         // Check if this transaction would exceed the hard cap
+        // Note: Both escrow.getTotalTokensSold() and stoConfig.getHardCap() are now in wei (18 decimals)
         uint256 currentTokensSold = escrow.getTotalTokensSold();
         uint256 hardCapLimit = stoConfig.getHardCap();
-        
+
         // If this transaction would exceed the hard cap, adjust the tokens and refund
         if (currentTokensSold + tokens > hardCapLimit) {
             uint256 allowedTokens = hardCapLimit - currentTokensSold;
-            
+
             // Calculate adjusted investment and refund amounts
             uint256 originalRate = tokens * 1e18 / (_investedAmount - refund);
             uint256 adjustedInvestment = allowedTokens * 1e18 / originalRate;
             uint256 additionalRefund = (_investedAmount - refund) - adjustedInvestment;
-            
+
             // Update tokens and refund values
             tokens = allowedTokens;
             refund += additionalRefund;
@@ -414,10 +415,9 @@ contract InvestmentManager is ReentrancyGuard {
 
         // Update state in the configuration
         stoConfig.updateFundsRaised(uint8(STOConfig.FundRaiseType.ERC20), int256(netInvestment));
-        
-        // Deposit funds and token allocation in escrow
-        escrow.deposit(_beneficiary, netInvestment, tokens);
-        
+
+        // Instead of directly depositing to escrow, return investment details
+        // The STO contract will handle the actual deposit to ensure proper authorization
         return (tokens, refund);
     }
     

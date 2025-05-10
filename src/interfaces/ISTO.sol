@@ -79,4 +79,10 @@ interface ISTO {
      * @return The verification manager contract
      */
     function getVerificationManager() external view returns (address);
+    
+    /**
+     * @notice Get the signatures contract used for EIP-712 signature verification
+     * @return The signatures contract address
+     */
+    function signaturesContract() external view returns (address);
 }
