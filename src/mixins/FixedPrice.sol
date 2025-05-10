@@ -54,8 +54,10 @@ contract FixedPrice is PricingLogic, IFixedPrice {
      * @return refund Amount to be refunded (if any)
      */
     function calculateTokenAmount(uint256 _investedAmount) external view override(IPricingLogic, PricingLogic) returns (uint256 tokens, uint256 refund) {
+        // _investedAmount is already in wei (18 decimals)
+        // minInvestment is now also stored in wei (18 decimals)
         require(_investedAmount >= minInvestment, Errors.BELOW_MIN_INVESTMENT);
-        
+
         // Calculate tokens based on rate
         tokens = _investedAmount * rate / (10 ** 18);
         

@@ -29,8 +29,8 @@ contract SignedOrderTest is Test {
     uint256 private deployerPrivateKey;
     
     // Test parameters - using a very small amount that won't hit the hard cap
-    uint256 private constant INVESTMENT_AMOUNT = 1 * 10**15; // 0.001 tokens (1 finney) to stay far below hard cap
-    uint256 private constant SECURITY_TOKEN_AMOUNT = 2 * 10**14; // 0.0002 security tokens
+    uint256 private constant INVESTMENT_AMOUNT = 100 * 10**18; // 0.001 tokens (1 finney) to stay far below hard cap
+    uint256 private constant SECURITY_TOKEN_AMOUNT = 200 * 10**17; // 0.0002 security tokens
     
     function setUp() public {
         // Load environment variables

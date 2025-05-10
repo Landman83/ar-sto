@@ -23,10 +23,12 @@ abstract contract PricingLogic is IPricingLogic {
     
     /**
      * @notice Set minimum investment amount
-     * @param _minInvestment Minimum amount that can be invested
+     * @param _minInvestment Minimum amount that can be invested in raw token units
+     *        This will be converted to wei (18 decimals) for consistent comparison with token amounts
      */
     function setMinInvestment(uint256 _minInvestment) public {
-        minInvestment = _minInvestment;
+        // Convert raw token units to wei (18 decimals) for consistent comparison with token amounts
+        minInvestment = _minInvestment * 10**18;
     }
     
     /**
@@ -53,4 +55,12 @@ abstract contract PricingLogic is IPricingLogic {
      * @return The current conversion rate
      */
     function getCurrentRate() external view virtual override returns (uint256);
+
+    /**
+     * @notice Get the minimum investment amount in raw token units (for display purposes)
+     * @return The minimum investment amount in raw token units
+     */
+    function getMinInvestmentInTokens() external view returns (uint256) {
+        return minInvestment / 10**18;
+    }
 }

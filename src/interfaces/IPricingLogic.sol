@@ -18,4 +18,10 @@ interface IPricingLogic {
      * @return The current conversion rate
      */
     function getCurrentRate() external view returns (uint256);
+
+    /**
+     * @notice Get the minimum investment amount in raw token units (for display purposes)
+     * @return The minimum investment amount in raw token units
+     */
+    function getMinInvestmentInTokens() external view returns (uint256);
 }
