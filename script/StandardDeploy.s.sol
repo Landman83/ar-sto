@@ -23,6 +23,7 @@ import "@ar-security-token/lib/st-identity-registry/src/interfaces/IAttributeReg
  * @notice Deploys a Security Token Offering (STO) using standard deployment
  * @dev This script follows the deployment-guide.txt and implements a step-by-step deployment
  */
+/*
 contract StandardDeployScript is Script {
     // Helper functions for parsing decimal rates
     function containsDecimal(string memory str) internal pure returns (bool) {
@@ -469,3 +470,5 @@ contract StandardDeployScript is Script {
         console.log("the correct Escrow address in the constructor.");
     }
 }
+*/
+

@@ -69,6 +69,7 @@ error RefundPeriodEnded(uint256 endTime);
 error RefundFailed(address token, address investor, uint256 amount);
 error RefundCalculationError(string reason);
 error WithdrawalLimitExceeded(uint256 limit, uint256 requested);
+error WithdrawalExceedsInvestment(uint256 withdrawalAmount, uint256 currentInvestment);
 
 // ===== Minting Errors =====
 error AlreadyClaimedTokens(address investor);

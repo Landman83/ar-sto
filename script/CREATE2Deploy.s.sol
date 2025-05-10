@@ -21,6 +21,7 @@ import {Create2 as OZCreate2} from "@openzeppelin/contracts/utils/Create2.sol";
  * @notice Deploys a Security Token Offering (STO) using CREATE2 for deterministic addresses
  * @dev This script follows the deployment-guide.txt and uses CREATE2 for all contract deployments
  */
+/*
 contract CREATE2DeployScript is Script {
     // Salt for CREATE2 deployment - can be modified to generate different addresses
     bytes32 public constant SALT = bytes32(uint256(0x12345));
@@ -437,3 +438,4 @@ contract CREATE2DeployScript is Script {
         console.log("- You can use a different salt for each deployed contract");
     }
 }
+*/

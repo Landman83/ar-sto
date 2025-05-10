@@ -9,6 +9,7 @@ import "@ar-security-token/lib/st-identity-registry/src/libraries/Attributes.sol
 import "../libraries/Events.sol";
 import "../libraries/Errors.sol";
 import "../libraries/Order.sol";
+import "../libraries/Withdrawal.sol";
 import "../interfaces/ISignatures.sol";
 import "../interfaces/IVerificationManager.sol";
 import "../interfaces/ICompliance.sol";
@@ -34,10 +35,10 @@ contract InvestmentManager is ReentrancyGuard {
     
     // The escrow contract
     Escrow public escrow;
-    
+
     // The pricing logic contract
     PricingLogic public pricingLogic;
-    
+
     // Configuration contract
     STOConfig public stoConfig;
     
@@ -54,6 +55,7 @@ contract InvestmentManager is ReentrancyGuard {
     ICompliance public compliance;
     
     // Mapping of investor to nonce (for replay protection)
+    // Used for both signed orders and signed withdrawals
     mapping(address => uint256) public nonces;
     
     // State tracking
@@ -62,11 +64,16 @@ contract InvestmentManager is ReentrancyGuard {
     
     // Events
     event InvestmentProcessed(
-        address indexed buyer, 
-        address indexed beneficiary, 
-        uint256 investedAmount, 
-        uint256 tokenAmount, 
+        address indexed buyer,
+        address indexed beneficiary,
+        uint256 investedAmount,
+        uint256 tokenAmount,
         uint256 refundAmount
+    );
+
+    event WithdrawalProcessed(
+        address indexed investor,
+        uint256 withdrawalAmount
     );
     
     /**
@@ -96,7 +103,7 @@ contract InvestmentManager is ReentrancyGuard {
         require(_escrow != address(0), Errors.ZERO_ADDRESS);
         require(_pricingLogic != address(0), Errors.ZERO_ADDRESS);
         require(_compliance != address(0), Errors.ZERO_ADDRESS);
-        
+
         stoContract = _stoContract;
         securityToken = _securityToken;
         investmentToken = IERC20(_investmentToken);
@@ -329,13 +336,121 @@ contract InvestmentManager is ReentrancyGuard {
      */
     function setFundRaiseType(uint8 fundRaiseType) external {
         require(msg.sender == stoContract, Errors.UNAUTHORIZED);
-        
+
         // Convert to array of one element
         STOConfig.FundRaiseType[] memory types = new STOConfig.FundRaiseType[](1);
         types[0] = STOConfig.FundRaiseType(fundRaiseType);
-        
+
         // Update the configuration
         stoConfig.setFundRaiseTypes(types);
+    }
+
+    /**
+     * @notice Verify a signed withdrawal from an investor
+     * @param _sender Address executing the withdrawal (usually an operator)
+     * @param withdrawal The withdrawal details signed by the investor
+     * @param signature The EIP-712 signature from the investor
+     */
+    function executeSignedWithdrawal(
+        address _sender,
+        Withdrawal.WithdrawalInfo calldata withdrawal,
+        bytes calldata signature
+    )
+        external
+        nonReentrant
+    {
+        require(msg.sender == stoContract, Errors.UNAUTHORIZED);
+
+        // Get the signatures contract address from the STO contract
+        address sigContractAddress;
+        try ISTO(stoContract).signaturesContract() returns (address addr) {
+            sigContractAddress = addr;
+        } catch {
+            sigContractAddress = address(0);
+        }
+
+        // Require a valid signatures contract
+        require(sigContractAddress != address(0), Errors.INVALID_OPERATION);
+
+        // We'll use the same Signatures contract that we use for orders
+        // But we need to hash the Withdrawal struct ourselves since Signatures doesn't support it
+
+        // Hash the withdrawal using EIP-712 format
+        bytes32 withdrawalHash = keccak256(abi.encode(
+            Withdrawal.WITHDRAWAL_TYPEHASH,
+            withdrawal.investor,
+            withdrawal.investmentToken,
+            withdrawal.withdrawalAmount,
+            withdrawal.nonce
+        ));
+
+        // Get domain separator from Signatures contract
+        bytes32 domainSeparator;
+        try ISignatures(sigContractAddress).getDomainSeparator() returns (bytes32 ds) {
+            domainSeparator = ds;
+        } catch {
+            revert(Errors.INVALID_OPERATION);
+        }
+
+        // Calculate the complete digest hash for EIP-712
+        bytes32 digestHash = keccak256(abi.encodePacked(
+            "\x19\x01",
+            domainSeparator,
+            withdrawalHash
+        ));
+
+        // Verify the signature
+        address signer = _recoverSigner(digestHash, signature);
+        require(signer == withdrawal.investor, Errors.INVALID_SIGNATURE);
+
+        // Verify the nonce to prevent replay attacks
+        require(nonces[withdrawal.investor] == withdrawal.nonce, Errors.INVALID_NONCE);
+
+        // Increment the nonce
+        nonces[withdrawal.investor]++;
+
+        // Validate the withdrawal request
+        require(withdrawal.investmentToken == address(investmentToken), Errors.INVALID_PARAMETER);
+        require(withdrawal.withdrawalAmount > 0, Errors.ZERO_INVESTMENT);
+        require(!escrow.isSTOClosed(), Errors.CLOSED);
+        require(!escrow.isFinalized(), Errors.ESCROW_ALREADY_FINALIZED);
+
+        // Rather than trying to execute the withdrawal directly,
+        // we just verify the signature and nonce, then return to the STO
+        // The STO will handle calling withdrawInvestment() on behalf of the investor
+
+        // Emit events
+        emit WithdrawalProcessed(withdrawal.investor, withdrawal.withdrawalAmount);
+    }
+
+    /**
+     * @notice Recover signer address from signature and hash
+     * @param hash The hash that was signed
+     * @param signature The signature bytes
+     * @return The recovered signer address
+     */
+    function _recoverSigner(bytes32 hash, bytes calldata signature) internal pure returns (address) {
+        require(signature.length == 65, "Invalid signature length");
+
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+
+        // Extract r, s, v from the signature
+        assembly {
+            r := calldataload(signature.offset)
+            s := calldataload(add(signature.offset, 32))
+            v := byte(0, calldataload(add(signature.offset, 64)))
+        }
+
+        // EIP-2 standardized the signature format
+        if (v < 27) {
+            v += 27;
+        }
+
+        require(v == 27 || v == 28, "Invalid signature 'v' value");
+
+        return ecrecover(hash, v, r, s);
     }
     
     /**
@@ -414,7 +529,7 @@ contract InvestmentManager is ReentrancyGuard {
         uint256 netInvestment = _investedAmount - refund;
 
         // Update state in the configuration
-        stoConfig.updateFundsRaised(uint8(STOConfig.FundRaiseType.ERC20), int256(netInvestment));
+        stoConfig.addFundsRaised(uint8(STOConfig.FundRaiseType.ERC20), netInvestment);
 
         // Instead of directly depositing to escrow, return investment details
         // The STO contract will handle the actual deposit to ensure proper authorization

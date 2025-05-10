@@ -3,6 +3,8 @@ pragma solidity ^0.8.17;
 
 import "../libraries/Order.sol";
 
+import "../libraries/Withdrawal.sol";
+
 /**
  * @title Interface for the Security Token Offering (STO) contract
  * @notice Comprehensive interface defining core STO functionality
@@ -85,4 +87,26 @@ interface ISTO {
      * @return The signatures contract address
      */
     function signaturesContract() external view returns (address);
+
+    /**
+     * @notice Execute a signed withdrawal from an investor
+     * @param withdrawal The withdrawal details signed by the investor
+     * @param signature The EIP-712 signature from the investor
+     */
+    function executeSignedWithdrawal(
+        Withdrawal.WithdrawalInfo calldata withdrawal,
+        bytes calldata signature
+    ) external;
+
+    /**
+     * @notice Check if the STO is closed
+     * @return Whether the STO is closed
+     */
+    function isSTOClosed() external view returns (bool);
+
+    /**
+     * @notice Check if the escrow is finalized
+     * @return Whether the escrow is finalized
+     */
+    function isEscrowFinalized() external view returns (bool);
 }

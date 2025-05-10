@@ -19,6 +19,7 @@ import "./interfaces/ICompliance.sol";
 import "./libraries/Events.sol";
 import "./libraries/CustomErrors.sol";
 import "./libraries/Order.sol";
+import "./libraries/Withdrawal.sol";
 import "./utils/MathHelpers.sol";
 import "./interfaces/ISTO.sol";
 import "./interfaces/IVerificationManager.sol";
@@ -29,6 +30,7 @@ import "./utils/InvestmentManager.sol";
 import "./utils/FinalizationManager.sol";
 import {VerificationManager} from "./utils/VerificationManager.sol";
 import "./utils/STOConfig.sol";
+import "./utils/SignedWithdraw.sol";
 
 /**
  * @title Security Token Offering for standard capped crowdsale
@@ -295,7 +297,7 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
     
     // Address of the signatures contract for EIP-712 signature verification
     address public signaturesContract;
-    
+
     /**
      * @notice Set the signatures contract for EIP-712 signature verification
      * @param _signaturesContract Address of the signatures contract
@@ -304,11 +306,11 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
         if (!hasRole(OPERATOR_ROLE, msg.sender)) {
             revert NotOperator(msg.sender);
         }
-        
+
         if (_signaturesContract == address(0)) {
             revert ZeroAddress("signaturesContract");
         }
-        
+
         // Store the signatures contract address in the STO
         signaturesContract = _signaturesContract;
     }
@@ -505,7 +507,7 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
         // - Calculating token amounts
         // - Tracking the investor
         // - Returning token and refund amounts
-        (uint256 tokens, uint256 refund) = investmentManager.buyTokens(
+        (uint256 tokens, uint256 refundAmount) = investmentManager.buyTokens(
             msg.sender,
             _beneficiary,
             _investedAmount
@@ -514,19 +516,19 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
         // Handle escrow deposit directly from the STO contract
         // This ensures the escrow's onlySTO modifier passes
         if (tokens > 0) {
-            uint256 netInvestment = _investedAmount - refund;
+            uint256 netInvestment = _investedAmount - refundAmount;
             escrow.deposit(_beneficiary, netInvestment, tokens);
         }
-        
+
         // If there's a refund, send it back to the investor
-        if (refund > 0) {
-            success = investmentToken.transfer(msg.sender, refund);
+        if (refundAmount > 0) {
+            success = investmentToken.transfer(msg.sender, refundAmount);
             if (!success) {
-                revert RefundFailed(address(investmentToken), msg.sender, refund);
+                revert RefundFailed(address(investmentToken), msg.sender, refundAmount);
             }
         }
-        
-        emit Events.TokenPurchase(msg.sender, _beneficiary, _investedAmount - refund, tokens);
+
+        emit Events.TokenPurchase(msg.sender, _beneficiary, _investedAmount - refundAmount, tokens);
         
         // Check if hard cap is reached using STOConfig as the source of truth
         if (stoConfig.isHardCapReached()) {
@@ -563,7 +565,7 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
         }
 
         // Process purchase through investment manager
-        (uint256 tokens, uint256 refund) = investmentManager.executeSignedOrder(
+        (uint256 tokens, uint256 refundAmount) = investmentManager.executeSignedOrder(
             msg.sender,
             order,
             signature
@@ -572,19 +574,19 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
         // Handle escrow deposit directly from the STO contract
         // This ensures the escrow's onlySTO modifier passes
         if (tokens > 0) {
-            uint256 netInvestment = order.investmentTokenAmount - refund;
+            uint256 netInvestment = order.investmentTokenAmount - refundAmount;
             escrow.deposit(order.investor, netInvestment, tokens);
         }
 
         // If there's a refund, send it back to the investor
-        if (refund > 0) {
-            success = investmentToken.transfer(order.investor, refund);
+        if (refundAmount > 0) {
+            success = investmentToken.transfer(order.investor, refundAmount);
             if (!success) {
-                revert RefundFailed(address(investmentToken), order.investor, refund);
+                revert RefundFailed(address(investmentToken), order.investor, refundAmount);
             }
         }
 
-        emit Events.TokenPurchase(msg.sender, order.investor, order.investmentTokenAmount - refund, tokens);
+        emit Events.TokenPurchase(msg.sender, order.investor, order.investmentTokenAmount - refundAmount, tokens);
         emit Events.OrderExecuted(order.investor, order.investmentTokenAmount, tokens, order.nonce);
 
         // Check if hard cap is reached using STOConfig as the source of truth
@@ -610,25 +612,84 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
      *      updates the funds raised in STOConfig to maintain accurate tracking
      */
     function withdrawInvestment(uint256 _amount) public override nonReentrant {
+        // Delegate to internal method with the caller as the investor
+        _withdrawInvestment(msg.sender, _amount);
+
+        // Event is emitted inside _withdrawInvestment
+    }
+
+    /**
+     * @notice Internal method to handle withdrawal logic
+     * @param _investor The investor address requesting withdrawal
+     * @param _amount Amount to withdraw
+     */
+    function _withdrawInvestment(address _investor, uint256 _amount) internal {
         // Validate STO status
         if (escrow.isSTOClosed()) {
             revert STOClosed();
         }
-        
+
         if (escrow.isFinalized()) {
             revert EscrowAlreadyFinalized();
         }
-        
-        // Process the withdrawal through the refund contract
-        refund.withdraw(msg.sender, _amount);
-        
+
+        // Get current investment to verify withdrawal amount
+        uint256 currentInvestment = escrow.getInvestment(_investor);
+        if (currentInvestment < _amount) {
+            revert WithdrawalExceedsInvestment(_amount, currentInvestment);
+        }
+
+        // Process the withdrawal by directly calling the Escrow contract
+        // Instead of going through the Refund contract
+        escrow.processWithdrawal(_investor, _amount);
+
+        // Track the withdrawal in the Refund contract for record-keeping
+        refund.recordWithdrawal(_investor, _amount);
+
         // Update funds raised in the STOConfig (single source of truth)
-        stoConfig.updateFundsRaised(
-            uint8(ISTOConfig.FundRaiseType.ERC20), 
-            -int256(_amount)
+        // Use the new reduceFundsRaised method which is safer than updateFundsRaised with negative values
+        stoConfig.reduceFundsRaised(
+            uint8(ISTOConfig.FundRaiseType.ERC20),
+            _amount
         );
-        
-        emit Events.InvestmentWithdrawn(msg.sender, _amount);
+
+        emit Events.InvestmentWithdrawn(_investor, _amount);
+    }
+
+    /**
+     * @notice Execute a signed withdrawal from an investor
+     * @dev Anyone can call this function to submit a signed withdrawal on behalf of an investor
+     * @param withdrawal The withdrawal details signed by the investor
+     * @param signature The EIP-712 signature from the investor
+     */
+    function executeSignedWithdrawal(
+        Withdrawal.WithdrawalInfo calldata withdrawal,
+        bytes calldata signature
+    ) external override whenNotPaused nonReentrant {
+        // Verify the signature using the InvestmentManager
+        // This will validate the signature and increment the nonce
+        investmentManager.executeSignedWithdrawal(
+            msg.sender,
+            withdrawal,
+            signature
+        );
+
+        // At this point, the signature is verified and the nonce is incremented
+        // We can now execute the withdrawal on behalf of the investor
+
+        // Store the original msg.sender for re-use
+        address operator = msg.sender;
+
+        // Execute the withdrawal using the internal _withdrawInvestment
+        _withdrawInvestment(withdrawal.investor, withdrawal.withdrawalAmount);
+
+        // Emit additional event for the signed withdrawal
+        emit Events.SignedWithdrawalExecuted(
+            withdrawal.investor,
+            withdrawal.withdrawalAmount,
+            withdrawal.nonce, // Emit the original nonce from the withdrawal request
+            operator
+        );
     }
     
     /**
@@ -866,5 +927,21 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
      */
     function getSTOConfig() external view returns (address) {
         return address(stoConfig);
+    }
+
+    /**
+     * @notice Check if the STO is closed
+     * @return Whether the STO is closed
+     */
+    function isSTOClosed() external view override returns (bool) {
+        return escrow.isSTOClosed();
+    }
+
+    /**
+     * @notice Check if the escrow is finalized
+     * @return Whether the escrow is finalized
+     */
+    function isEscrowFinalized() external view override returns (bool) {
+        return escrow.isFinalized();
     }
 }

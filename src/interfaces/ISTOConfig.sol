@@ -59,14 +59,22 @@ interface ISTOConfig {
     function setFundRaiseTypes(FundRaiseType[] calldata _fundRaiseTypes) external;
     
     /**
-     * @notice Update the funds raised for a specific type
+     * @notice Add to the funds raised for a specific type
      * @param _fundRaiseType The fund raise type
-     * @param _amount Amount to add (or subtract if negative)
+     * @param _amount Amount to add
      * @dev Only callable by the STO contract
      *      Updates the tracked amount of funds raised
-     *      Negative values are used for withdrawals/refunds
      */
-    function updateFundsRaised(uint8 _fundRaiseType, int256 _amount) external;
+    function addFundsRaised(uint8 _fundRaiseType, uint256 _amount) external;
+
+    /**
+     * @notice Reduce the funds raised for a specific type
+     * @param _fundRaiseType The fund raise type
+     * @param _amount Amount to subtract
+     * @dev Only callable by the STO contract
+     *      Updates the tracked amount of funds raised for withdrawals/refunds
+     */
+    function reduceFundsRaised(uint8 _fundRaiseType, uint256 _amount) external;
     
     /**
      * @notice Increment the investor count

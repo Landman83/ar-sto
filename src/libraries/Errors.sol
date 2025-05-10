@@ -72,6 +72,7 @@ library Errors {
     string constant REFUND_FAILED = "Refund transfer failed";
     string constant REFUND_CALCULATION_ERROR = "Error calculating refund amount";
     string constant WITHDRAWAL_LIMIT_EXCEEDED = "Withdrawal limit exceeded";
+    string constant WITHDRAWAL_EXCEEDS_INVESTMENT = "Withdrawal amount exceeds investment";
     
     // ===== Minting Errors =====
     string constant ALREADY_CLAIMED_TOKENS = "Already claimed tokens";
@@ -97,6 +98,9 @@ library Errors {
     string constant ORDER_ALREADY_PROCESSED = "Order already processed";
     string constant INVALID_ORDER_PARAMETERS = "Invalid order parameters";
     string constant SELF_TRANSFER_NOT_ALLOWED = "Self transfer not allowed";
+    string constant WITHDRAWAL_ALREADY_PROCESSED = "Withdrawal already processed";
+    string constant INVALID_WITHDRAWAL_PARAMETERS = "Invalid withdrawal parameters";
+    string constant NOT_AUTHORIZED_OPERATOR = "Caller is not an authorized operator";
     
     // ===== Factory & Proxy Errors =====
     string constant INVALID_IMPLEMENTATION = "Invalid implementation address";

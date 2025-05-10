@@ -175,23 +175,27 @@ contract STOConfig {
     }
     
     /**
-     * @notice Update the funds raised for a specific type
+     * @notice Add to the funds raised for a specific type
      * @param _fundRaiseType The fund raise type
-     * @param _amount Amount to add (or subtract if negative)
+     * @param _amount Amount to add
      */
-    function updateFundsRaised(uint8 _fundRaiseType, int256 _amount) external onlySTOContract {
-        if (_amount > 0) {
-            fundsRaised[_fundRaiseType] += uint256(_amount);
-        } else if (_amount < 0) {
-            // Ensure we don't underflow
-            uint256 absAmount = uint256(-_amount);
-            if (fundsRaised[_fundRaiseType] >= absAmount) {
-                fundsRaised[_fundRaiseType] -= absAmount;
-            } else {
-                fundsRaised[_fundRaiseType] = 0;
-            }
+    function addFundsRaised(uint8 _fundRaiseType, uint256 _amount) external onlySTOContract {
+        fundsRaised[_fundRaiseType] += _amount;
+    }
+
+    /**
+     * @notice Reduce the funds raised for a specific type
+     * @param _fundRaiseType The fund raise type
+     * @param _amount Amount to subtract
+     */
+    function reduceFundsRaised(uint8 _fundRaiseType, uint256 _amount) external onlySTOContract {
+        if (fundsRaised[_fundRaiseType] >= _amount) {
+            fundsRaised[_fundRaiseType] -= _amount;
+        } else {
+            fundsRaised[_fundRaiseType] = 0;
         }
     }
+
     
     /**
      * @notice Increment the investor count

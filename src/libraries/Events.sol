@@ -73,7 +73,13 @@ library Events {
     event RefundClaimed(address indexed investor, uint256 amount);
     event RefundProcessed(address indexed investor, uint256 amount);
     event WithdrawalProcessed(address indexed investor, uint256 amount);
-    
+    event SignedWithdrawalExecuted(
+        address indexed investor,
+        uint256 withdrawalAmount,
+        uint256 nonce,
+        address indexed operator
+    );
+
     // Extended refund events
     event RefundPeriodChanged(uint256 indexed offeringId, uint256 newPeriodDuration);
     

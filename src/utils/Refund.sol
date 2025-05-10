@@ -163,25 +163,17 @@ contract Refund is ReentrancyGuard {
     }
     
     /**
-     * @dev Allow an investor to withdraw some or all of their investment before offering closes
+     * @dev Record a withdrawal that was processed by the STO contract
      * @param _investor Address of the investor
-     * @param _amount Amount to withdraw
+     * @param _amount Amount withdrawn
      */
-    function withdraw(address _investor, uint256 _amount) external onlySTO nonReentrant {
-        require(!escrow.isSTOClosed(), "STO is already closed");
-        require(!escrow.isFinalized(), "Escrow is already finalized");
-        
-        uint256 investment = escrow.getInvestment(_investor);
-        require(investment >= _amount, "Withdrawal amount exceeds investment");
-        
+    function recordWithdrawal(address _investor, uint256 _amount) external onlySTO nonReentrant {
         // Mark as withdrawn in refunds mapping to track partial withdrawals
         refunds[_investor] += _amount;
-        
-        // Call escrow to process the withdrawal (it will handle token transfer)
-        escrow.processWithdrawal(_investor, _amount);
-        
+
         emit WithdrawalProcessed(_investor, _amount);
     }
+
     
     /**
      * @dev Check if an investor has claimed their refund

@@ -27,6 +27,7 @@ import "@ar-security-token/lib/st-identity-registry/src/interfaces/IAttributeReg
  *      3. Register modules with the core
  *      4. Set up cross-module dependencies
  */
+/*
 contract ModularDeployScript is Script {
     // Helper functions for parsing decimal rates
     function containsDecimal(string memory str) internal pure returns (bool) {
@@ -377,3 +378,4 @@ contract ModularDeployScript is Script {
         console.log("4. If the STO is not registered as an agent, register it manually");
     }
 }
+*/
