@@ -323,11 +323,25 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
         if (!hasRole(OPERATOR_ROLE, msg.sender)) {
             revert NotOperator(msg.sender);
         }
-        
-        // This function assumes the token has a method to add an agent
-        // The actual implementation depends on your Rule506c token's API
-        // Example: securityToken.addAgent(address(this));
-        // You'll need to implement this based on your token's specific API
+
+        // Use the proper method to register the STO
+        if (isRule506cOffering) {
+            // Register this STO with the security token
+            // The registerSTO method automatically adds the STO as an agent
+            try IToken(securityToken).registerSTO(address(this)) {
+                // Success - registerSTO adds agent role automatically
+            } catch Error(string memory reason) {
+                revert(string(abi.encodePacked("Failed to register STO: ", reason)));
+            } catch {
+                revert("Failed to register STO with security token");
+            }
+
+            // Since we don't have direct access to adding agents through the IToken interface,
+            // and the FinalizationManager needs agent privileges, we'll modify our approach:
+            // 1. The STO is now an agent (via registerSTO)
+            // 2. When the FinalizationManager needs to mint tokens, it will call back to the STO
+            // 3. The STO will perform the actual minting as it has agent privileges
+        }
     }
 
     /**
@@ -520,11 +534,20 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
             escrow.deposit(_beneficiary, netInvestment, tokens);
         }
 
-        // If there's a refund, send it back to the investor
+        // If there's a refund, handle it through the Refund contract for consistency
         if (refundAmount > 0) {
-            success = investmentToken.transfer(msg.sender, refundAmount);
+            // Approve the Refund contract to spend the tokens
+            success = investmentToken.approve(address(refund), refundAmount);
             if (!success) {
-                revert RefundFailed(address(investmentToken), msg.sender, refundAmount);
+                revert ApprovalFailed(address(investmentToken), address(refund), refundAmount);
+            }
+
+            // Process the refund through the Refund contract
+            try refund.processExcessRefund(msg.sender, refundAmount) {
+                // Refund was processed successfully
+                emit Events.RefundProcessed(msg.sender, refundAmount);
+            } catch Error(string memory reason) {
+                revert(string(abi.encodePacked("Refund failed: ", reason)));
             }
         }
 
@@ -578,11 +601,20 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
             escrow.deposit(order.investor, netInvestment, tokens);
         }
 
-        // If there's a refund, send it back to the investor
+        // If there's a refund, handle it through the Refund contract for consistency
         if (refundAmount > 0) {
-            success = investmentToken.transfer(order.investor, refundAmount);
+            // Approve the Refund contract to spend the tokens
+            success = investmentToken.approve(address(refund), refundAmount);
             if (!success) {
-                revert RefundFailed(address(investmentToken), order.investor, refundAmount);
+                revert ApprovalFailed(address(investmentToken), address(refund), refundAmount);
+            }
+
+            // Process the refund through the Refund contract
+            try refund.processExcessRefund(order.investor, refundAmount) {
+                // Refund was processed successfully
+                emit Events.RefundProcessed(order.investor, refundAmount);
+            } catch Error(string memory reason) {
+                revert(string(abi.encodePacked("Refund failed: ", reason)));
             }
         }
 
@@ -723,38 +755,44 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
      */
     function finalize() public override {
         // Check timing and cap conditions for finalization using STOConfig
-        if (!(block.timestamp > stoConfig.endTime() || stoConfig.isHardCapReached())) {
+        bool endTimeReached = block.timestamp > stoConfig.endTime();
+        bool hardCapReached = stoConfig.isHardCapReached();
+
+        if (!(endTimeReached || hardCapReached)) {
             revert STOAlreadyActive();
         }
-        
+
         // Check permissions
         if (msg.sender != address(this) && !hasRole(OPERATOR_ROLE, msg.sender)) {
             revert NotOperator(msg.sender);
         }
-        
-        // Get the finalization details from the FinalizationManager
+
+        // Check if STO is already closed, if not, close it
+        if (!escrow.isSTOClosed()) {
+            escrow.closeSTO(hardCapReached, endTimeReached);
+        }
+
+        // Get the finalization details from STOConfig
         bool softCapReached = stoConfig.isSoftCapReached();
 
-        // Instead of calling finalizationManager.finalize directly,
-        // we'll perform the necessary steps to avoid the "Caller is not the STO" error
-        if (softCapReached) {
-            // If soft cap reached, finalize the escrow
-            escrow.finalize(true);
-
-            // Process the finalization
-            finalizationManager.processMinting(
-                investmentManager.getAllInvestors()
-            );
-        } else {
-            // If soft cap not reached, finalize with false to enable refunds
-            escrow.finalize(false);
-
-            // Process the refunds
-            finalizationManager.processRefunds(
-                investmentManager.getAllInvestors()
-            );
+        // Perform escrow finalization based on soft cap status
+        if (!escrow.isFinalized()) {
+            escrow.finalize(softCapReached);
         }
-        
+
+        // Get all investors to process
+        address[] memory investors = investmentManager.getAllInvestors();
+
+        // Delegate processing to the appropriate manager while preserving
+        // the STO as the caller to avoid permission issues
+        if (softCapReached) {
+            // If soft cap reached, process minting
+            this.mintTokensToInvestors(investors);
+        } else {
+            // If soft cap not reached, process refunds
+            this.processRefundsToInvestors(investors);
+        }
+
         emit Events.STOFinalized(softCapReached);
     }
     
@@ -762,25 +800,22 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
      * @notice Issue tokens to a specific investor
      * @param _investor Address of the investor
      * @param _amount Amount of tokens to issue
-     * @dev For Rule506c tokens, this function delegates minting to the contract owner
-     *      who is already registered as an agent of the security token.
+     * @dev This function can now be called either by the Minting contract or directly by the STO
+     *      when it needs to mint tokens. The actual implementation is delegated to FinalizationManager
+     *      to maintain modularity while fixing permission issues.
      *
      * Dependencies:
-     * - Can only be called by the Minting contract
-     * - Delegates functionality to FinalizationManager which is the authoritative source
-     *   for token issuance status and processing
+     * - Can be called by the Minting contract or directly by this contract
+     * - Logic is delegated to FinalizationManager to preserve modularity
      */
     function issueTokens(address _investor, uint256 _amount) external override {
-        // Verify caller permission
-        if (msg.sender != address(minting)) {
-            revert Unauthorized(msg.sender, "MINTING");
+        // Verify caller permission - allow both minting contract and this contract
+        if (msg.sender != address(minting) && msg.sender != address(this)) {
+            revert Unauthorized(msg.sender, "MINTING_OR_STO");
         }
-        
-        // Always use finalization manager for token issuance
-        // The FinalizationManager is responsible for:
-        // - Calling the security token to mint tokens
-        // - Tracking which investors have received tokens
-        // - Ensuring tokens are only issued once per investor
+
+        // Delegate token minting to finalization manager in all cases
+        // The finalization manager has been updated to accept calls from this contract
         finalizationManager.issueTokens(_investor, _amount);
     }
     
@@ -794,9 +829,130 @@ contract CappedSTO is ISTO, ReentrancyGuard, Cap, Ownable, AccessControl {
         if (!isRule506cOffering) {
             revert InvalidOperation("ownerMintTokens", "Not a Rule506c offering");
         }
-        
+
         // Always use finalization manager for owner minting
         finalizationManager.ownerMintTokens(_investor, _amount, msg.sender);
+    }
+
+    /**
+     * @notice Handle minting delegation from the finalization manager
+     * @dev This is called by the FinalizationManager when it's not an agent of the token
+     * @param _investor The investor to receive tokens
+     * @param _amount The amount of tokens to mint
+     */
+    function handleDelegatedMinting(address _investor, uint256 _amount) external {
+        // Only allow calls from the finalization manager
+        if (msg.sender != address(finalizationManager)) {
+            revert Unauthorized(msg.sender, "FINALIZATION_MANAGER");
+        }
+
+        // For Rule506c offerings, mint directly if STO is an agent
+        if (isRule506cOffering) {
+            IToken token = IToken(securityToken);
+
+            // Mint tokens to the investor
+            try token.mint(_investor, _amount) {
+                // Success! Emit an event
+                emit Events.TokensDelivered(_investor, _amount);
+            } catch Error(string memory reason) {
+                // Handle specific error from token contract
+                revert(string(abi.encodePacked("Token mint failed: ", reason)));
+            } catch {
+                // Handle other errors
+                revert("Token mint failed due to compliance check");
+            }
+        } else {
+            // For simple ERC20 tokens, transfer from contract balance
+            bool success = IERC20(securityToken).transfer(_investor, _amount);
+            if (!success) {
+                revert TransferFailed(securityToken, address(this), _investor, _amount);
+            }
+            emit Events.TokensDelivered(_investor, _amount);
+        }
+    }
+
+    /**
+     * @notice Transfer tokens from STO's balance to an investor
+     * @dev Used for non-Rule506c tokens which don't require minting permissions
+     * @param _investor The investor to receive tokens
+     * @param _amount The amount of tokens to transfer
+     */
+    function transferTokens(address _investor, uint256 _amount) external {
+        // Only allow calls from the finalization manager
+        if (msg.sender != address(finalizationManager)) {
+            revert Unauthorized(msg.sender, "FINALIZATION_MANAGER");
+        }
+
+        // Simple ERC20 transfer from STO contract balance to investor
+        bool success = IERC20(securityToken).transfer(_investor, _amount);
+        if (!success) {
+            revert TransferFailed(securityToken, address(this), _investor, _amount);
+        }
+
+        emit Events.TokensDelivered(_investor, _amount);
+    }
+
+    /**
+     * @notice Helper function to mint tokens to multiple investors
+     * @dev This function is used during finalization to efficiently mint tokens
+     *      while preserving modularity by delegating to FinalizationManager
+     * @param _investors Array of investor addresses
+     */
+    function mintTokensToInvestors(address[] calldata _investors) external {
+        if (msg.sender != address(this)) {
+            revert Unauthorized(msg.sender, "STO_ONLY");
+        }
+
+        // Delegate to finalization manager to maintain modularity
+        finalizationManager.processMinting(_investors);
+    }
+
+    /**
+     * @notice Helper function to process refunds for multiple investors
+     * @dev This function is used during finalization when soft cap isn't reached
+     * @param _investors Array of investor addresses
+     */
+    function processRefundsToInvestors(address[] calldata _investors) external {
+        if (msg.sender != address(this)) {
+            revert Unauthorized(msg.sender, "STO_ONLY");
+        }
+
+        // Call the new method that processes refunds directly
+        processRefundsForInvestors(_investors);
+    }
+
+    /**
+     * @notice Process refunds for investors - called by FinalizationManager
+     * @dev This function is the entry point for the FinalizationManager to request refunds
+     * @param _investors Array of investor addresses to process
+     */
+    function processRefundsForInvestors(address[] calldata _investors) public {
+        // Only allow calls from this contract or the finalization manager
+        if (msg.sender != address(this) && msg.sender != address(finalizationManager)) {
+            revert Unauthorized(msg.sender, "STO_OR_FINALIZATION_MANAGER");
+        }
+
+        // Process each investor directly from the STO contract
+        for (uint256 i = 0; i < _investors.length; i++) {
+            address investor = _investors[i];
+
+            // Use the finalization manager to get refund details
+            (bool needsRefund, uint256 amount) = finalizationManager.getRefundDetailsForInvestor(investor);
+
+            if (needsRefund && amount > 0) {
+                // Mark the refund as processed in the refund contract
+                // This call will succeed because it's coming from the STO contract
+                refund.markRefundProcessed(investor, amount);
+
+                // IMPORTANT: We need to transfer from the Escrow contract, not from the STO
+                // The funds are stored in the Escrow contract, not in the STO contract
+                // First approve the investor to withdraw from escrow
+                escrow.approveRefund(investor, amount);
+
+                // Emit event after the approval
+                emit Events.RefundProcessed(investor, amount);
+            }
+        }
     }
 
     // Simplified fallback functions

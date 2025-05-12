@@ -496,14 +496,14 @@ contract InvestmentManager is ReentrancyGuard {
      * @return refund Amount to refund if any
      */
     function _processTx(
-        address _beneficiary, 
+        address _beneficiary,
         uint256 _investedAmount
-    ) 
-        internal 
-        returns (uint256 tokens, uint256 refund) 
+    )
+        internal
+        returns (uint256 tokens, uint256 refund)
     {
         _preValidatePurchase(_beneficiary, _investedAmount);
-        
+
         // Calculate token amount to be created
         (tokens, refund) = _getTokenAmount(_investedAmount);
 
@@ -511,25 +511,48 @@ contract InvestmentManager is ReentrancyGuard {
         // Note: Both escrow.getTotalTokensSold() and stoConfig.getHardCap() are now in wei (18 decimals)
         uint256 currentTokensSold = escrow.getTotalTokensSold();
         uint256 hardCapLimit = stoConfig.getHardCap();
+        uint256 currentFundsRaised = stoConfig.fundsRaised(uint8(STOConfig.FundRaiseType.ERC20));
+        uint256 investmentAfterRefund = _investedAmount - refund;
 
         // If this transaction would exceed the hard cap, adjust the tokens and refund
         if (currentTokensSold + tokens > hardCapLimit) {
             uint256 allowedTokens = hardCapLimit - currentTokensSold;
 
-            // Calculate adjusted investment and refund amounts
-            uint256 originalRate = tokens * 1e18 / (_investedAmount - refund);
-            uint256 adjustedInvestment = allowedTokens * 1e18 / originalRate;
-            uint256 additionalRefund = (_investedAmount - refund) - adjustedInvestment;
+            // Calculate adjusted investment and refund amounts based on token ratio
+            uint256 originalRate = stoConfig.rate(); // Get the rate from source of truth
+            uint256 adjustedInvestment = (allowedTokens * 1e18) / originalRate;
+
+            // Important: Calculate refund based on the total investment amount
+            // to account for any existing refund from pricing calculations
+            uint256 additionalRefund = investmentAfterRefund - adjustedInvestment;
 
             // Update tokens and refund values
             tokens = allowedTokens;
             refund += additionalRefund;
+
+            // Log information about the cap adjustment for debugging
+            // console.log("Hard cap adjustment: originalTokens =", tokens + additionalTokens);
+            // console.log("Hard cap adjustment: allowedTokens =", allowedTokens);
+            // console.log("Hard cap adjustment: additionalRefund =", additionalRefund);
+            // console.log("Hard cap adjustment: totalRefund =", refund);
         }
-        
+
+        // Calculate the net investment after all refunds are applied
         uint256 netInvestment = _investedAmount - refund;
 
-        // Update state in the configuration
-        stoConfig.addFundsRaised(uint8(STOConfig.FundRaiseType.ERC20), netInvestment);
+        // Use the enhanced addFundsRaised function that enforces the hard cap
+        // This will automatically handle any excess calculation based on the hard cap
+        (uint256 acceptedAmount, uint256 additionalExcess) = stoConfig.addFundsRaised(uint8(STOConfig.FundRaiseType.ERC20), netInvestment);
+
+        // If there was additional excess due to hard cap enforcement, add it to the refund
+        if (additionalExcess > 0) {
+            refund += additionalExcess;
+
+            // Recalculate token amount based on the accepted investment
+            // We need to adjust tokens proportionally to the accepted investment amount
+            uint256 originalRate = stoConfig.rate();
+            tokens = (acceptedAmount * originalRate) / 1e18;
+        }
 
         // Instead of directly depositing to escrow, return investment details
         // The STO contract will handle the actual deposit to ensure proper authorization

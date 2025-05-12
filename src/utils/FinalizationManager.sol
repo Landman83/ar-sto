@@ -159,12 +159,42 @@ contract FinalizationManager is ReentrancyGuard {
      * @param _investors Array of investor addresses
      */
     function _processRefundsForAllInvestors(address[] calldata _investors) internal {
-        // Process refunds in batches to avoid gas limit issues
-        refund.processRefundsForAll(_investors);
+        // Call back to the STO contract to handle the refunds
+        // This ensures that calls to the Refund contract come directly from the STO
+        (bool success,) = stoContract.call(
+            abi.encodeWithSignature(
+                "processRefundsForInvestors(address[])",
+                _investors
+            )
+        );
+
+        // If the call fails, revert with an error message
+        if (!success) {
+            revert("Failed to process refunds through STO");
+        }
     }
 
     /**
-     * @notice Public function to process refunds for all investors
+     * @notice Get refund details for an investor
+     * @param _investor Address of the investor
+     * @return needsRefund Whether the investor needs a refund
+     * @return amount Amount to refund
+     */
+    function getRefundDetailsForInvestor(address _investor) external view returns (bool needsRefund, uint256 amount) {
+        // Skip if investor has already claimed refund
+        if (refund.hasClaimedRefund(_investor)) {
+            return (false, 0);
+        }
+
+        // Get investment amount from escrow
+        uint256 investmentAmount = escrow.getInvestment(_investor);
+
+        // Return true and the amount if a refund is needed
+        return (investmentAmount > 0, investmentAmount);
+    }
+
+    /**
+     * @notice Process refunds for all investors
      * @param _investors Array of investor addresses
      */
     function processRefunds(address[] calldata _investors) external {
@@ -176,10 +206,37 @@ contract FinalizationManager is ReentrancyGuard {
     }
 
     /**
+     * @notice Get list of investors that need refunds
+     * @return Array of investor addresses that need refunds
+     * @dev This is a placeholder implementation - not used in the actual code flow
+     */
+    function getInvestorsNeedingRefunds() external view returns (address[] memory) {
+        // This method would normally return all investors that need refunds
+        // For now, we return an empty array as it's not needed for our implementation
+        return new address[](0);
+    }
+
+    /**
+     * @notice Process refund for a single investor
+     * @param _investor The investor address to process refund for
+     * @param _amount The amount to refund
+     */
+    function processRefund(address _investor, uint256 _amount) external {
+        require(msg.sender == stoContract, "Only STO contract can call");
+
+        // Mark the refund in the refund contract if it hasn't been claimed yet
+        if (!refund.hasClaimedRefund(_investor)) {
+            refund.markRefundProcessed(_investor, _amount);
+        }
+    }
+
+    /**
      * @notice Mint tokens to all investors
      * @param _investors Array of investor addresses
      */
     function _mintTokensToAllInvestors(address[] calldata _investors) internal {
+        // Let the minting contract handle the token issuance flow
+        // This ensures that calls to issueTokens come from the minting contract
         minting.batchMintAndDeliverTokens(_investors);
     }
 
@@ -203,12 +260,14 @@ contract FinalizationManager is ReentrancyGuard {
      * @param _amount Amount of tokens to issue
      */
     function issueTokens(address _investor, uint256 _amount) external {
-        require(msg.sender == address(minting), "Only minting contract can call this function");
-        
+        // Allow calls from either minting contract or STO contract
+        require(msg.sender == address(minting) || msg.sender == stoContract,
+               "Only minting or STO contract can call this function");
+
         if (isRule506cOffering) {
             // Get the token interface
             IToken token = IToken(securityToken);
-            
+
             // Check if this contract is registered as an agent
             bool isSTOAgent = false;
             // IToken interface doesn't have isAgent function, so use a try/catch with a custom call
@@ -222,7 +281,7 @@ contract FinalizationManager is ReentrancyGuard {
                 // If the call fails, assume we're not an agent
                 isSTOAgent = false;
             }
-            
+
             if (isSTOAgent) {
                 // If registered as an agent, mint directly with try/catch to handle compliance errors
                 try token.mint(_investor, _amount) {
@@ -239,8 +298,8 @@ contract FinalizationManager is ReentrancyGuard {
                 // which should be handled by the owner
                 (bool success2,) = stoContract.call(
                     abi.encodeWithSignature(
-                        "handleDelegatedMinting(address,uint256)", 
-                        _investor, 
+                        "handleDelegatedMinting(address,uint256)",
+                        _investor,
                         _amount
                     )
                 );
@@ -251,8 +310,8 @@ contract FinalizationManager is ReentrancyGuard {
             // This assumes the STO contract has been allocated tokens to distribute
             (bool success,) = stoContract.call(
                 abi.encodeWithSignature(
-                    "transferTokens(address,uint256)", 
-                    _investor, 
+                    "transferTokens(address,uint256)",
+                    _investor,
                     _amount
                 )
             );

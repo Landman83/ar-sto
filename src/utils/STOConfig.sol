@@ -175,12 +175,35 @@ contract STOConfig {
     }
     
     /**
-     * @notice Add to the funds raised for a specific type
+     * @notice Add to the funds raised for a specific type, enforcing the hard cap
      * @param _fundRaiseType The fund raise type
      * @param _amount Amount to add
+     * @return acceptedAmount Amount actually added to funds raised
+     * @return excessAmount Amount that exceeded the hard cap and was not added
      */
-    function addFundsRaised(uint8 _fundRaiseType, uint256 _amount) external onlySTOContract {
-        fundsRaised[_fundRaiseType] += _amount;
+    function addFundsRaised(uint8 _fundRaiseType, uint256 _amount) external onlySTOContract returns (uint256 acceptedAmount, uint256 excessAmount) {
+        // Calculate total funds raised across all types
+        uint256 totalRaised = 0;
+        for (uint8 i = 0; i <= uint8(FundRaiseType.ERC20); i++) {
+            totalRaised += fundsRaised[i];
+        }
+
+        // Check if adding this amount would exceed the hard cap
+        if (totalRaised + _amount > hardCap) {
+            // Calculate how much we can accept without exceeding the hard cap
+            acceptedAmount = hardCap > totalRaised ? hardCap - totalRaised : 0;
+            excessAmount = _amount - acceptedAmount;
+
+            // Only add the accepted amount
+            fundsRaised[_fundRaiseType] += acceptedAmount;
+        } else {
+            // We can add the full amount
+            acceptedAmount = _amount;
+            excessAmount = 0;
+            fundsRaised[_fundRaiseType] += _amount;
+        }
+
+        return (acceptedAmount, excessAmount);
     }
 
     /**

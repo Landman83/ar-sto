@@ -183,6 +183,41 @@ contract Refund is ReentrancyGuard {
     function hasClaimedRefund(address _investor) external view returns (bool) {
         return refunds[_investor] > 0;
     }
+
+    /**
+     * @dev Mark a refund as processed without transferring funds
+     * @param _investor Address of the investor
+     * @param _amount Amount to mark as refunded
+     * @dev This is used when the actual transfer is handled elsewhere (e.g., by the STO contract)
+     */
+    function markRefundProcessed(address _investor, uint256 _amount) external onlySTO {
+        // Only mark as refunded if not already refunded
+        if (refunds[_investor] == 0) {
+            refunds[_investor] = _amount;
+            emit RefundProcessed(_investor, _amount);
+        }
+    }
+
+    /**
+     * @dev Process a direct refund from the STO contract to an investor
+     * @param _investor Address of the investor to refund
+     * @param _amount Amount to refund
+     * @dev This function handles both partial and hard cap excess refunds
+     */
+    function processExcessRefund(address _investor, uint256 _amount) external onlySTO nonReentrant {
+        require(_investor != address(0), "Invalid investor address");
+        require(_amount > 0, "Refund amount must be greater than 0");
+
+        // Record the refund amount
+        refunds[_investor] += _amount;
+
+        // Transfer funds directly from the caller (STO) to the investor
+        // This assumes the STO has already transferred the tokens to itself
+        bool success = investmentToken.transferFrom(msg.sender, _investor, _amount);
+        require(success, "Refund transfer failed");
+
+        emit RefundProcessed(_investor, _amount);
+    }
     
     /**
      * @dev Get the refund amount for an investor

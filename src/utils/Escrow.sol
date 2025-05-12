@@ -373,6 +373,33 @@ contract Escrow is ReentrancyGuard {
     function getTotalTokensSold() external view returns (uint256) {
         return totalTokensAllocated;
     }
+
+    /**
+     * @dev Approve and process a refund for an investor
+     * @param _investor Address of the investor to refund
+     * @param _amount Amount to refund
+     */
+    function approveRefund(address _investor, uint256 _amount)
+        external
+        onlySTO
+        nonReentrant
+    {
+        require(finalized, "Escrow must be finalized before refunds");
+        require(!softCapReached, "Cannot refund when soft cap is reached");
+        require(_investor != address(0), "Investor address cannot be zero");
+        require(_amount > 0, "Amount must be greater than zero");
+
+        // Verify the investor has enough funds to refund
+        uint256 availableAmount = investments[_investor] - withdrawals[_investor];
+        require(availableAmount >= _amount, "Refund amount exceeds available investment");
+
+        // Update withdrawal record to prevent double refunds
+        withdrawals[_investor] += _amount;
+
+        // Transfer tokens directly from escrow to investor
+        bool success = investmentToken.transfer(_investor, _amount);
+        require(success, "Refund transfer failed");
+    }
 }
 
 

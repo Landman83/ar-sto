@@ -621,13 +621,19 @@ contract OZProxyDeployScript is Script {
         // STEP 5: Register STO as agent on the security token
         // -----------------------------------------------------------------
         console.log("\nStep 5: Registering STO as agent on security token...");
-        
-        try sto.registerAsAgent() {
-            console.log("STO registered as agent on the security token");
+
+        // Since deployer is the token owner, directly call registerSTO on the token
+        // This automatically adds the STO as an agent
+        try IToken(securityToken).registerSTO(stoAddress) {
+            console.log("STO successfully registered with the security token and granted agent role");
+        } catch Error(string memory reason) {
+            console.log("Failed to register STO on security token. Reason:", reason);
+            console.log("You'll need to manually register the STO using the token owner's account");
         } catch {
-            console.log("Failed to register STO as agent - manual registration may be needed");
+            console.log("Failed to register STO on security token (unknown error)");
+            console.log("You'll need to manually register the STO using the token owner's account");
         }
-        
+
         vm.stopBroadcast();
         
         // -----------------------------------------------------------------
