@@ -158,11 +158,14 @@ contract FinalizationTest is Test {
         uint256 investorSecTokenBefore = securityToken.balanceOf(deployer);
         address payable fundsReceiver = stoConfig.fundsReceiver();
         uint256 receiverInvTokenBefore = investmentToken.balanceOf(fundsReceiver);
+        uint256 escrowBalanceBefore = investmentToken.balanceOf(address(escrow));
 
         console.log("===== INITIAL BALANCES =====");
         console.log("Investor investment token balance:", investorInvTokenBefore);
         console.log("Investor security token balance:", investorSecTokenBefore);
         console.log("Funds receiver investment token balance:", receiverInvTokenBefore);
+        console.log("Escrow investment token balance:", escrowBalanceBefore);
+        console.log("Funds receiver address:", fundsReceiver);
 
         // 2. Calculate the amount needed to reach hard cap exactly
         uint256 currentFundsRaised = stoConfig.fundsRaised(uint8(ISTOConfig.FundRaiseType.ERC20));
@@ -191,6 +194,11 @@ contract FinalizationTest is Test {
 
                 // Verify STO is closed
                 assertTrue(escrow.isSTOClosed(), "STO should be closed after reaching hard cap");
+
+                // Verify funds are in escrow
+                uint256 escrowBalanceAfterDeposit = investmentToken.balanceOf(address(escrow));
+                assertGe(escrowBalanceAfterDeposit, escrowBalanceBefore + amountNeeded, "Escrow balance should increase by deposit amount");
+                console.log("Escrow balance after deposit:", escrowBalanceAfterDeposit);
             } catch Error(string memory reason) {
                 console.log("Deposit failed:", reason);
                 vm.stopPrank();
@@ -215,19 +223,25 @@ contract FinalizationTest is Test {
             uint256 investorInvTokenAfter = investmentToken.balanceOf(deployer);
             uint256 investorSecTokenAfter = securityToken.balanceOf(deployer);
             uint256 receiverInvTokenAfter = investmentToken.balanceOf(fundsReceiver);
+            uint256 escrowBalanceAfter = investmentToken.balanceOf(address(escrow));
 
             console.log("===== FINAL BALANCES =====");
             console.log("Investor investment token balance:", investorInvTokenAfter);
             console.log("Investor security token balance:", investorSecTokenAfter);
             console.log("Funds receiver investment token balance:", receiverInvTokenAfter);
+            console.log("Escrow investment token balance:", escrowBalanceAfter);
 
             console.log("===== BALANCE CHANGES =====");
             console.log("Investor investment token change:", int256(investorInvTokenAfter) - int256(investorInvTokenBefore));
             console.log("Investor security token change:", int256(investorSecTokenAfter) - int256(investorSecTokenBefore));
             console.log("Funds receiver investment token change:", int256(receiverInvTokenAfter) - int256(receiverInvTokenBefore));
+            console.log("Escrow investment token change:", int256(escrowBalanceAfter) - int256(escrowBalanceBefore));
 
-            // Verify funds were transferred to the funds receiver
+            // Verify funds were transferred to the funds receiver from escrow
             assertGt(receiverInvTokenAfter, receiverInvTokenBefore, "Funds receiver should have received investment tokens");
+
+            // Verify escrow has released funds (balance should be lower after finalization)
+            assertLt(escrowBalanceAfter, escrowBalanceBefore + amountNeeded, "Escrow balance should decrease after finalization");
 
             // Verify investor received security tokens (critical test for minting)
             assertGt(investorSecTokenAfter, investorSecTokenBefore, "Investor should have received security tokens - minting failed");
@@ -252,30 +266,42 @@ contract FinalizationTest is Test {
      */
     function testFinalizeExceedingHardCap() public {
         console.log("\n=== TEST: Finalize STO with Excess Over Hard Cap ===");
-        
+
         // Skip if STO is already finalized or closed
         if (escrow.isFinalized() || escrow.isSTOClosed()) {
             console.log("STO is already finalized or closed, skipping test");
             return;
         }
-        
+
         // Check active offering state
         if (!stoConfig.isOfferingActive()) {
             console.log("STO is not active, skipping test");
             return;
         }
-        
+
+        // Record initial balances before any operations
+        uint256 investorBalanceBefore = investmentToken.balanceOf(deployer);
+        address payable fundsReceiver = stoConfig.fundsReceiver();
+        uint256 receiverBalanceBefore = investmentToken.balanceOf(fundsReceiver);
+        uint256 escrowBalanceBefore = investmentToken.balanceOf(address(escrow));
+
+        console.log("===== INITIAL BALANCES =====");
+        console.log("Investor investment token balance:", investorBalanceBefore);
+        console.log("Funds receiver investment token balance:", receiverBalanceBefore);
+        console.log("Escrow investment token balance:", escrowBalanceBefore);
+        console.log("Funds receiver address:", fundsReceiver);
+
         // 1. Calculate the amount needed to reach hard cap plus excess
         uint256 currentFundsRaised = stoConfig.fundsRaised(uint8(ISTOConfig.FundRaiseType.ERC20));
         uint256 amountNeeded = hardCap - currentFundsRaised;
         uint256 excess = 1000 * 10**18; // 1000 tokens excess
         uint256 totalDeposit = amountNeeded + excess;
-        
+
         console.log("Current funds raised:", currentFundsRaised);
         console.log("Amount needed to reach hard cap:", amountNeeded);
         console.log("Excess amount:", excess);
         console.log("Total deposit:", totalDeposit);
-        
+
         if (amountNeeded == 0) {
             console.log("Hard cap already reached, skipping deposit");
         } else {
@@ -283,57 +309,74 @@ contract FinalizationTest is Test {
             vm.startPrank(deployer);
             investmentToken.approve(stoAddress, totalDeposit);
 
-            // Record initial balances
-            uint256 investorBalanceBefore = investmentToken.balanceOf(deployer);
-
             try sto.buyTokens(deployer, totalDeposit) {
                 console.log("Deposit completed");
 
                 // Verify only the necessary amount was taken
-                uint256 investorBalanceAfter = investmentToken.balanceOf(deployer);
-                uint256 actualDeduction = investorBalanceBefore - investorBalanceAfter;
+                uint256 investorBalanceAfterDeposit = investmentToken.balanceOf(deployer);
+                uint256 actualDeduction = investorBalanceBefore - investorBalanceAfterDeposit;
                 console.log("Actual amount deducted:", actualDeduction);
-                
+
                 // The investor should get refunded the excess, so they should only lose the amount needed
                 assertApproxEqRel(actualDeduction, amountNeeded, 0.01e18, "Incorrect amount deducted from investor - excess should be refunded");
-                
+
                 // Verify funds raised increased to exactly hard cap
                 uint256 newFundsRaised = stoConfig.fundsRaised(uint8(ISTOConfig.FundRaiseType.ERC20));
                 assertEq(newFundsRaised, hardCap, "Funds raised should equal hard cap exactly");
-                
+
                 // Verify STO is closed
                 assertTrue(escrow.isSTOClosed(), "STO should be closed after reaching hard cap");
+
+                // Verify funds are in escrow
+                uint256 escrowBalanceAfterDeposit = investmentToken.balanceOf(address(escrow));
+                assertGe(escrowBalanceAfterDeposit, escrowBalanceBefore + amountNeeded, "Escrow balance should increase by deposit amount");
+                console.log("Escrow balance after deposit:", escrowBalanceAfterDeposit);
             } catch Error(string memory reason) {
                 console.log("Deposit failed:", reason);
                 vm.stopPrank();
                 // Continue with test even if deposit fails
             }
-            
+
             vm.stopPrank();
         }
-        
+
         // 3. Finalize the STO now that hard cap is reached
         vm.startPrank(deployer);
         console.log("Calling finalize() as deployer (operator)");
-        
+
         try sto.finalize() {
             console.log("Successfully finalized the STO");
-            
+
             // Verify STO is finalized
             assertTrue(escrow.isFinalized(), "Escrow should be finalized");
             assertTrue(stoConfig.isSoftCapReached(), "Soft cap should be reached");
-            
-            // Check funds were transferred to wallet
-            address payable fundsReceiver = stoConfig.fundsReceiver();
-            uint256 receiverBalance = investmentToken.balanceOf(fundsReceiver);
-            console.log("Funds receiver balance:", receiverBalance);
-            assertGt(receiverBalance, 0, "Funds receiver should have received funds");
-            
+
+            // Check final balances after finalization
+            uint256 investorBalanceAfter = investmentToken.balanceOf(deployer);
+            uint256 receiverBalanceAfter = investmentToken.balanceOf(fundsReceiver);
+            uint256 escrowBalanceAfter = investmentToken.balanceOf(address(escrow));
+
+            console.log("===== FINAL BALANCES =====");
+            console.log("Investor investment token balance:", investorBalanceAfter);
+            console.log("Funds receiver investment token balance:", receiverBalanceAfter);
+            console.log("Escrow investment token balance:", escrowBalanceAfter);
+
+            console.log("===== BALANCE CHANGES =====");
+            console.log("Investor investment token change:", int256(investorBalanceAfter) - int256(investorBalanceBefore));
+            console.log("Funds receiver investment token change:", int256(receiverBalanceAfter) - int256(receiverBalanceBefore));
+            console.log("Escrow investment token change:", int256(escrowBalanceAfter) - int256(escrowBalanceBefore));
+
+            // Verify funds were transferred to the funds receiver from escrow
+            assertGt(receiverBalanceAfter, receiverBalanceBefore, "Funds receiver should have received investment tokens");
+
+            // Verify escrow has released funds (balance should be lower after finalization)
+            assertLt(escrowBalanceAfter, escrowBalanceBefore + amountNeeded, "Escrow balance should decrease after finalization");
+
         } catch Error(string memory reason) {
             console.log("Finalization failed:", reason);
             assertTrue(false, string.concat("Finalization failed: ", reason));
         }
-        
+
         vm.stopPrank();
         console.log("Test completed");
     }
@@ -356,11 +399,14 @@ contract FinalizationTest is Test {
         uint256 investorSecTokenBefore = securityToken.balanceOf(deployer);
         address payable fundsReceiver = stoConfig.fundsReceiver();
         uint256 receiverInvTokenBefore = investmentToken.balanceOf(fundsReceiver);
+        uint256 escrowBalanceBefore = investmentToken.balanceOf(address(escrow));
 
         console.log("===== INITIAL BALANCES =====");
         console.log("Investor investment token balance:", investorInvTokenBefore);
         console.log("Investor security token balance:", investorSecTokenBefore);
         console.log("Funds receiver investment token balance:", receiverInvTokenBefore);
+        console.log("Escrow investment token balance:", escrowBalanceBefore);
+        console.log("Funds receiver address:", fundsReceiver);
 
         // 2. Check current state
         uint256 endTime = stoConfig.endTime();
@@ -370,15 +416,21 @@ contract FinalizationTest is Test {
         console.log("Current funds raised:", currentFundsRaised);
 
         // 3. If we haven't reached the soft cap, deposit enough to hit it
+        uint256 amountDeposited = 0;
         if (currentFundsRaised < softCap) {
-            uint256 amountNeeded = softCap - currentFundsRaised;
-            console.log("Depositing", amountNeeded, "tokens to reach soft cap");
+            amountDeposited = softCap - currentFundsRaised;
+            console.log("Depositing", amountDeposited, "tokens to reach soft cap");
 
             vm.startPrank(deployer);
-            investmentToken.approve(stoAddress, amountNeeded);
+            investmentToken.approve(stoAddress, amountDeposited);
 
-            try sto.buyTokens(deployer, amountNeeded) {
+            try sto.buyTokens(deployer, amountDeposited) {
                 console.log("Successfully deposited funds to meet soft cap");
+
+                // Verify funds are in escrow
+                uint256 escrowBalanceAfterDeposit = investmentToken.balanceOf(address(escrow));
+                assertGe(escrowBalanceAfterDeposit, escrowBalanceBefore + amountDeposited, "Escrow balance should increase by deposit amount");
+                console.log("Escrow balance after deposit:", escrowBalanceAfterDeposit);
             } catch Error(string memory reason) {
                 console.log("Deposit failed:", reason);
                 vm.stopPrank();
@@ -415,19 +467,29 @@ contract FinalizationTest is Test {
             uint256 investorInvTokenAfter = investmentToken.balanceOf(deployer);
             uint256 investorSecTokenAfter = securityToken.balanceOf(deployer);
             uint256 receiverInvTokenAfter = investmentToken.balanceOf(fundsReceiver);
+            uint256 escrowBalanceAfter = investmentToken.balanceOf(address(escrow));
 
             console.log("===== FINAL BALANCES =====");
             console.log("Investor investment token balance:", investorInvTokenAfter);
             console.log("Investor security token balance:", investorSecTokenAfter);
             console.log("Funds receiver investment token balance:", receiverInvTokenAfter);
+            console.log("Escrow investment token balance:", escrowBalanceAfter);
 
             console.log("===== BALANCE CHANGES =====");
             console.log("Investor investment token change:", int256(investorInvTokenAfter) - int256(investorInvTokenBefore));
             console.log("Investor security token change:", int256(investorSecTokenAfter) - int256(investorSecTokenBefore));
             console.log("Funds receiver investment token change:", int256(receiverInvTokenAfter) - int256(receiverInvTokenBefore));
+            console.log("Escrow investment token change:", int256(escrowBalanceAfter) - int256(escrowBalanceBefore));
 
-            // Verify funds were transferred to the funds receiver
+            // Verify funds were transferred to the funds receiver from escrow
             assertGt(receiverInvTokenAfter, receiverInvTokenBefore, "Funds receiver should have received investment tokens");
+
+            // Verify escrow has released funds (balance should be lower after finalization)
+            if (amountDeposited > 0) {
+                assertLt(escrowBalanceAfter, escrowBalanceBefore + amountDeposited, "Escrow balance should decrease after finalization");
+            } else if (currentFundsRaised > 0) {
+                assertLt(escrowBalanceAfter, escrowBalanceBefore, "Escrow balance should decrease after finalization");
+            }
 
             // Verify investor received security tokens (critical test for minting)
             assertGt(investorSecTokenAfter, investorSecTokenBefore, "Investor should have received security tokens - minting failed");

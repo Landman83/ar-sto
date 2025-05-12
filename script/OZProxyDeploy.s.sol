@@ -92,6 +92,7 @@ contract OZProxyDeployScript is Script {
     string private constant ENV_RATE = "RATE";
     string private constant ENV_PRIVATE_KEY = "PRIVATE_KEY";
     string private constant ENV_DEPLOYER_ADDRESS = "DEPLOYER_ADDRESS";
+    string private constant ENV_FUNDS_RECEIVER = "FUNDS_RECEIVER";
 
     // Deployment parameters
     bool private constant IS_RULE_506C = true;
@@ -132,6 +133,8 @@ contract OZProxyDeployScript is Script {
         address securityToken = vm.envAddress(ENV_SECURITY_TOKEN);
         address investmentToken = vm.envAddress(ENV_INVESTMENT_TOKEN);
         address deployer = vm.envAddress(ENV_DEPLOYER_ADDRESS);
+        // Get funds receiver address with deployer as fallback
+        address fundsReceiver = vm.envOr(ENV_FUNDS_RECEIVER, deployer);
         
         // Get the current nonce of the deployer to track deployment addresses
         uint256 currentNonce = vm.getNonce(deployer);
@@ -181,7 +184,7 @@ contract OZProxyDeployScript is Script {
         console.log("Hard Cap:", hardCap);
         console.log("Soft Cap:", softCap);
         console.log("Rate:", rate);
-        console.log("Funds Receiver:", deployer);
+        console.log("Funds Receiver:", fundsReceiver);
         console.log("Investment Token:", investmentToken);
         console.log("Fee Rate:", FEE_RATE);
         console.log("Fee Wallet:", deployer);
@@ -294,7 +297,7 @@ contract OZProxyDeployScript is Script {
             stoAddress,
             securityToken,
             investmentToken,
-            payable(deployer),
+            payable(fundsReceiver),
             address(refund),
             address(minting),
             address(fees)
@@ -394,7 +397,7 @@ contract OZProxyDeployScript is Script {
             hardCap,
             softCap,
             rate,
-            payable(deployer),
+            payable(fundsReceiver),
             investmentToken
         );
         
@@ -528,7 +531,7 @@ contract OZProxyDeployScript is Script {
             hardCap,
             softCap,
             rate,
-            payable(deployer), // funds receiver
+            payable(fundsReceiver), // funds receiver
             investmentToken,
             address(fixedPrice),
             address(minting),
